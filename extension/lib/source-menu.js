@@ -51,7 +51,7 @@
     getEpisode, isOverlayActive, localeHasContent,
     localeLabels = {},
     onSelectLocale, onTurnOff,
-    onSelectCustom, onLoadFile, onRemoveCustom, onAdjustSync, onExport,
+    onSelectCustom, onLoadFile, onSearchAnimesub, onRemoveCustom, onAdjustSync, onExport,
     onAdjustTiming, getAdjustTimingAction,
     onTranslate, getTranslateAction, onClearMt, getClearMtAction,
     onCancelTranslate, getCancelAction, onMtSettings, getMtSettingsAction,
@@ -454,7 +454,7 @@
     // effectively always offered, so this is true whenever that callback exists;
     // the per-source verbs (sync/export) and MT actions show contextually inside.
     function hasManageActions() {
-      return !!(onLoadFile || onTranslate || onMtSettings || onClearMt);
+      return !!(onLoadFile || onSearchAnimesub || onTranslate || onMtSettings || onClearMt);
     }
 
     function buildContent(menuEl) {
@@ -592,6 +592,9 @@
         const curLocale    = ep.activeSource() ?? 'ja-JP';
         const customs      = ep.listCustomSources?.() ?? [];
         const activeCustom = customs.some(c => c.id === curLocale) && isOverlayActive();
+        if (onSearchAnimesub) {
+          menuEl.appendChild(makeActionRow('🔎 Szukaj na AnimeSub…', () => { close(); onSearchAnimesub(); }));
+        }
         if (onLoadFile) {
           menuEl.appendChild(makeActionRow('＋ Load subtitle file / ZIP…', () => { close(); onLoadFile(); }));
         }
@@ -663,7 +666,7 @@
       // Custom sources (uploads / MT) are selectable languages too — same list.
       for (const cs of customs) {
         const isActive = on && (curLocale === cs.id);
-        const badge    = cs.kind === 'mt' ? 'machine' : 'file';
+        const badge    = cs.kind === 'mt' ? 'machine' : cs.origin?.site === 'animesub' ? 'AnimeSub' : 'file';
         list.appendChild(makeCustomRow(cs.label || cs.id, isActive, badge, () => {
           close(); onSelectCustom?.(cs.id);
         }, () => {
@@ -682,6 +685,15 @@
         menuEl.appendChild(makeSubtextRow('📚', 'Learning mode',
           secLabel ? `Second subtitle: ${secLabel}` : 'Show two subtitles for study',
           () => { view = 'learn'; buildContent(menuEl); }, true));
+      }
+
+      // (c2) Fork: Polish fansubs — the main reason this fork exists, so it sits
+      // in the main view rather than one level down under "Manage".
+      if (onSearchAnimesub) {
+        const cur = curCustom?.origin?.site === 'animesub' ? curCustom : customs.find((c) => c.origin?.site === 'animesub');
+        menuEl.appendChild(makeSubtextRow('🔎', 'Szukaj napisów PL',
+          cur ? `AnimeSub · ${cur.origin.author || cur.label}` : 'AnimeSub.info — wyszukaj i wczytaj',
+          () => { close(); onSearchAnimesub(); }, true));
       }
 
       // (d) Show on screen + Manage sources — a compact two-up row.

@@ -140,6 +140,18 @@
       } catch (e) {
         reply({ ok: false, error: String(e && e.message) });
       }
+    } else if (data.method === 'animesubSearch' || data.method === 'animesubDownload') {
+      // Fork: AnimeSub.info search / download, executed by the SW (host
+      // permission + cookie jar live there).  The result passes through as-is.
+      const type = data.method === 'animesubSearch' ? MSG.AS_SEARCH : MSG.AS_DOWNLOAD;
+      try {
+        chrome.runtime.sendMessage({ type, payload: data.payload }, (res) => {
+          const err = chrome.runtime.lastError;
+          reply(err ? { ok: false, error: err.message } : (res || { ok: false, error: 'no-response' }));
+        });
+      } catch (e) {
+        reply({ ok: false, error: String(e && e.message) });
+      }
     } else {
       reply({ ok: false, error: 'unknown-method' });
     }

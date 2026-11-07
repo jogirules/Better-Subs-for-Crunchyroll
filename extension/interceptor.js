@@ -453,6 +453,7 @@
       else if (name === 'official') saveSetting('hideOfficialSubs', !on);
     },
     onLoadFile:      ()       => promptLoadFile(),
+    onSearchAnimesub: ()      => openAnimesubPanel(),
     onRemoveCustom:  (id)     => removeCustomSource(id),
     onAdjustSync:    (id)     => openSyncPanel(id),
     // Per-track timing nudge — available whenever subtitles are showing.
@@ -705,7 +706,7 @@
   // unpack a ZIP if needed, let the user pick when an archive holds several
   // subtitle files, decode the text (UTF-8 / CP1250 / ISO-8859-2), convert
   // legacy formats, then register + select it like an uploaded file.
-  async function ingestSubtitleBytes(bytes, name) {
+  async function ingestSubtitleBytes(bytes, name, opts) {
     let cands;
     try { cands = await INGEST.candidatesFrom(bytes, name); }
     catch (err) { log.warn(`Archive [${name}] unreadable: ${err && err.message}`); showErrorToast('Could not open that archive.'); return; }
@@ -717,7 +718,7 @@
     catch (err) { log.warn(`Archive entry [${cand.name}] failed: ${err && err.message}`); showErrorToast('Could not unpack that subtitle file.'); return; }
     const sub = INGEST.toSubtitleText(entryBytes, cand.name);
     log.info(`Subtitle bytes [${cand.name}] — ${sub.encoding}, ${sub.format}${sub.fps ? ` @ ${sub.fps} fps` : ''}.`);
-    ingestSubtitleText(sub.parseName, sub.text, cand.name);
+    ingestSubtitleText(sub.parseName, sub.text, cand.name, opts);
   }
 
   // A small chooser over the player for archives with several subtitle files.
@@ -761,12 +762,180 @@
     });
   }
 
+  // ── AnimeSub.info search panel (fork) ─────────────────────────────────────
+  // Every request is a click: search on Enter / "Szukaj", download on
+  // "Pobierz".  The SW queues requests (≥3 s apart) and caches searches for
+  // 24 h, so this panel never talks to AnimeSub on its own.
+  const AS_PANEL_ID     = 'cr-bsub-animesub-panel';
+  const AS_LAST_KEY     = 'crSubFix_asLast';      // { query, titleType }
+  const AS_TITLE_TYPES  = [['org', 'Tytuł oryginalny'], ['en', 'Tytuł angielski'], ['pl', 'Tytuł polski']];
+
+  function asErrorText(code) {
+    if (code === 'timeout')        return 'AnimeSub nie odpowiada — spróbuj za chwilę.';
+    if (code === 'security-error') return 'AnimeSub odrzucił pobieranie (błąd zabezpieczeń) — spróbuj ponownie.';
+    if (code === 'not-in-results') return 'Tego wyniku nie ma już na liście — wyszukaj ponownie.';
+    if (code === 'not-a-zip')      return 'AnimeSub zwrócił coś innego niż archiwum.';
+    if (/^AnimeSub HTTP/.test(code || '')) return code;
+    return 'Nie udało się połączyć z AnimeSub.';
+  }
+
+  function openAnimesubPanel() {
+    if (!currentEp()) return;
+    const existing = document.getElementById(AS_PANEL_ID);
+    if (existing) { existing.querySelector('input')?.focus(); return; }
+    let last = {};
+    try { last = JSON.parse(localStorage.getItem(AS_LAST_KEY) || '{}') || {}; } catch (_) {}
+    const state = { query: last.query || '', titleType: last.titleType || 'org', page: 0, busy: false };
+
+    const panel = document.createElement('div');
+    panel.id = AS_PANEL_ID;
+    Object.assign(panel.style, panelStyle({
+      position: 'absolute', zIndex: '2147483646', padding: '12px 14px', width: '480px',
+      maxWidth: '92%', maxHeight: '78%', display: 'flex', flexDirection: 'column', gap: '8px',
+    }));
+    panel.innerHTML =
+      `<div style="display:flex;justify-content:space-between;align-items:center;">` +
+        `<div style="font-size:13px;font-weight:700;color:${THEME.accent};">🔎 Szukaj na AnimeSub.info</div>` +
+        `<div data-row="close"></div></div>` +
+      `<div style="display:flex;gap:6px;">` +
+        `<input data-f="q" type="text" spellcheck="false" placeholder="np. Sousou no Frieren 2nd Season ep01" ` +
+          `style="flex:1;min-width:0;background:#111;color:${THEME.text};border:1px solid ${THEME.panelEdge};border-radius:5px;padding:5px 8px;font:12px ${THEME.font};">` +
+        `<select data-f="t" style="background:#1a1a2e;color:${THEME.text};border:1px solid ${THEME.panelEdge};border-radius:5px;font:12px ${THEME.font};"></select>` +
+        `<span data-row="go"></span></div>` +
+      `<div data-row="status" style="font-size:11px;color:#999;min-height:14px;"></div>` +
+      `<div data-row="list" style="overflow-y:auto;display:flex;flex-direction:column;gap:6px;scrollbar-width:thin;"></div>` +
+      `<div data-row="pager" style="display:flex;justify-content:space-between;"></div>`;
+
+    const $ = (sel) => panel.querySelector(sel);
+    const input = $('[data-f="q"]'), select = $('[data-f="t"]');
+    const status = $('[data-row="status"]'), list = $('[data-row="list"]'), pager = $('[data-row="pager"]');
+    input.value = state.query;
+    for (const [v, label] of AS_TITLE_TYPES) {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = label; o.style.background = '#1a1a2e'; o.style.color = THEME.text;
+      if (v === state.titleType) o.selected = true;
+      select.appendChild(o);
+    }
+    // The CR player binds single-key shortcuts (space, f, m, arrows) on the
+    // document — keep typing inside the panel from pausing/seeking the video.
+    for (const ev of ['keydown', 'keyup', 'keypress']) {
+      panel.addEventListener(ev, (e) => {
+        if (ev === 'keydown' && e.key === 'Escape') { close(); return; }
+        if (ev === 'keydown' && e.key === 'Enter' && e.target === input) search(0);
+        e.stopPropagation();
+      });
+    }
+    const closeB = syncBtn('✕');
+    closeB.addEventListener('click', () => close());
+    $('[data-row="close"]').appendChild(closeB);
+    const goB = syncBtn('Szukaj', true);
+    goB.addEventListener('click', () => search(0));
+    $('[data-row="go"]').appendChild(goB);
+
+    function close() { try { panel.remove(); } catch (_) {} }
+    function setBusy(b, text) {
+      state.busy = b;
+      goB.disabled = b; goB.style.opacity = b ? '0.5' : '1';
+      for (const btn of panel.querySelectorAll('[data-dl]')) btn.disabled = b;
+      status.textContent = text || '';
+    }
+
+    async function search(page) {
+      if (state.busy) return;
+      const query = input.value.trim();
+      if (!query) { status.textContent = 'Wpisz tytuł, np. „Sousou no Frieren ep01”.'; input.focus(); return; }
+      state.query = query; state.titleType = select.value; state.page = page;
+      try { localStorage.setItem(AS_LAST_KEY, JSON.stringify({ query, titleType: state.titleType })); } catch (_) {}
+      setBusy(true, 'Szukam…');
+      const res = await rpc('animesubSearch', { query, titleType: state.titleType, page }, 45000);
+      setBusy(false);
+      if (!res.ok) { status.textContent = asErrorText(res.error); return; }
+      render(res);
+    }
+
+    function render(res) {
+      list.innerHTML = ''; pager.innerHTML = '';
+      const n = res.results.length;
+      status.textContent = n
+        ? `Strona ${state.page + 1}: ${n} wynik${n === 1 ? '' : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 'i' : 'ów')}${res.cached ? ' (z pamięci podręcznej)' : ''}.`
+        : 'Brak wyników. Spróbuj bez numeru odcinka albo innego typu tytułu.';
+      for (const r of res.results) list.appendChild(resultRow(r));
+      if (state.page > 0) {
+        const prev = syncBtn('‹ Poprzednia');
+        prev.addEventListener('click', () => search(state.page - 1));
+        pager.appendChild(prev);
+      } else pager.appendChild(document.createElement('span'));
+      if (res.hasNext) {
+        const next = syncBtn('Następna ›');
+        next.addEventListener('click', () => search(state.page + 1));
+        pager.appendChild(next);
+      }
+      list.scrollTop = 0;
+    }
+
+    function resultRow(r) {
+      const row = document.createElement('div');
+      Object.assign(row.style, {
+        border: `1px solid ${THEME.panelEdge}`, borderRadius: '6px', padding: '7px 9px',
+        display: 'flex', gap: '8px', alignItems: 'flex-start',
+      });
+      const who  = r.author || r.uploader || '?';
+      const meta = [who, r.format, r.date, r.size, r.downloads != null ? `⬇ ${r.downloads}` : '']
+        .filter(Boolean).map(escapeHtml).join(' · ');
+      const alt  = [r.titleEn, r.titleAlt].filter(Boolean).map(escapeHtml).join(' / ');
+      const desc = String(r.description || '');
+      const info = document.createElement('div');
+      info.style.cssText = 'flex:1;min-width:0;font-size:12px;line-height:1.4;';
+      info.innerHTML =
+        `<div style="font-weight:700;color:${THEME.text};word-break:break-word;">${escapeHtml(r.titleOrg || '')}</div>` +
+        (alt ? `<div style="color:#999;font-size:11px;word-break:break-word;">${alt}</div>` : '') +
+        `<div style="color:${THEME.accent};font-size:11px;margin-top:2px;">${meta}</div>` +
+        (desc ? `<div data-f="desc" title="Kliknij, aby rozwinąć" style="color:#bbb;font-size:11px;margin-top:3px;white-space:pre-wrap;word-break:break-word;max-height:4.2em;overflow:hidden;cursor:pointer;">${escapeHtml(desc)}</div>` : '');
+      const d = info.querySelector('[data-f="desc"]');
+      if (d) d.addEventListener('click', () => { d.style.maxHeight = d.style.maxHeight === 'none' ? '4.2em' : 'none'; });
+      const dl = syncBtn('Pobierz', true);
+      dl.setAttribute('data-dl', '1');
+      dl.addEventListener('click', () => download(r));
+      row.append(info, dl);
+      return row;
+    }
+
+    async function download(r) {
+      if (state.busy) return;
+      setBusy(true, `Pobieram ${r.titleOrg}… (AnimeSub wymaga świeżego wyszukiwania, ok. 5 s)`);
+      const res = await rpc('animesubDownload', { id: r.id, query: state.query, titleType: state.titleType, page: state.page }, 60000);
+      setBusy(false);
+      if (!res.ok) { status.textContent = asErrorText(res.error); return; }
+      let bytes;
+      try {
+        const bin = atob(res.base64);
+        bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      } catch (_) { status.textContent = 'Uszkodzone dane z AnimeSub.'; return; }
+      log.info(`AnimeSub download [${r.id}] ${res.filename} — ${res.size} bytes.`);
+      close();
+      await ingestSubtitleBytes(bytes, res.filename, {
+        id: CUSTOM.ANIMESUB_ID,
+        origin: { site: 'animesub', id: r.id, author: r.author || r.uploader || '', title: r.titleOrg || '' },
+      });
+    }
+
+    const mountTarget = document.fullscreenElement ?? videoEl?.parentElement ?? document.body;
+    if (mountTarget !== document.body && window.getComputedStyle(mountTarget).position === 'static') mountTarget.style.position = 'relative';
+    mountTarget.appendChild(panel);
+    panel.style.left = '50%'; panel.style.top = '6%'; panel.style.transform = 'translateX(-50%)';
+    setTimeout(() => { input.focus(); input.select(); }, 0);
+    if (state.query) search(0);   // cached in the SW for 24 h — no extra AnimeSub hit on re-open
+  }
+
   // parseName drives format detection (legacy formats arrive as ".srt");
   // labelName is what the user recognises in the menu.
-  function ingestSubtitleText(parseName, text, labelName) {
+  // opts.id / opts.origin: AnimeSub downloads go to their own 'custom:animesub'
+  // slot (see custom-source.js); everything else uses 'custom:local'.
+  function ingestSubtitleText(parseName, text, labelName, opts) {
     const ep = currentEp();
     if (!ep) return;
-    const record = CUSTOM.makeLocalSource(parseName, text);
+    const record = CUSTOM.makeLocalSource(parseName, text, opts);
     if (!record) {
       log.warn(`Uploaded file [${labelName}] parsed to 0 cues.`);
       showErrorToast('No subtitles found in that file.');
@@ -775,13 +944,13 @@
     if (labelName) record.label = String(labelName).replace(/\.[^.]+$/, '').slice(0, 40) || record.label;
     log.info(`Loaded local subtitle file [${labelName}] — ${record.srcCues.length} cues.`);
     // A new file invalidates any half-done translation of the previous one.
-    clearMtPartials(ep.guid, CUSTOM_LOCAL_ID);
+    clearMtPartials(ep.guid, record.id);
     ep.addCustomSource(record);
     sourceMenu.updateButtonVisibility();
-    // force=true: re-uploading replaces the same 'custom:local' slot, so the id
-    // may be unchanged while the cues changed — bypass selectSource's same-id
+    // force=true: re-uploading replaces the same slot, so the id may be
+    // unchanged while the cues changed — bypass selectSource's same-id
     // short-circuit to apply the new file's cues live.
-    selectSource(CUSTOM_LOCAL_ID, true);
+    selectSource(record.id, true);
   }
 
   // Drag-and-drop: drop a subtitle file or ZIP (e.g. saved from Discord) onto a
@@ -1270,8 +1439,8 @@
   // same way the activation path does.
   async function fetchCuesForLocale(ep, locale) {
     // The user's uploaded file: its cues with their sync baked in, no fetch.
-    if (locale === CUSTOM_LOCAL_ID) {
-      const rec = ep.getCustomSource(CUSTOM_LOCAL_ID);
+    if (isCustomId(locale) && ep.getCustomSource(locale)?.kind === 'local') {
+      const rec = ep.getCustomSource(locale);
       const cues = rec ? applyCustomSync(rec) : [];
       return cues.length ? { cues, rawText: rec.signRawAss, url: null } : null;
     }
@@ -1376,7 +1545,7 @@
 
     const source = (opts && opts.source) || pickMtSourceLocale(ep, target);
     if (!source) { showErrorToast('No subtitle track available to translate from.'); return; }
-    const sLabel = source === CUSTOM_LOCAL_ID ? 'your file' : (LOCALE_LABELS[source] ?? source);
+    const sLabel = isCustomId(source) ? 'your file' : (LOCALE_LABELS[source] ?? source);
     const srcLang = isCustomId(source) ? '' : source;   // upload's language unknown → provider auto-detects
 
     const hud = UI.makeProgressHud(toastHost());
@@ -1573,7 +1742,9 @@
   // Valid CR official tracks for this episode usable as a translation source.
   function validSourceOptions(ep, target) {
     const opts = [['', 'Auto (best available)']];
-    if (ep.getCustomSource(CUSTOM_LOCAL_ID)) opts.push([CUSTOM_LOCAL_ID, 'Your uploaded file']);
+    for (const cs of ep.listCustomSources?.() ?? []) {
+      if (cs.kind === 'local') opts.push([cs.id, cs.id === CUSTOM_LOCAL_ID ? 'Your uploaded file' : (cs.label || cs.id)]);
+    }
     for (const v of ep.catalog.versions()) {
       const loc = v.locale;
       if (loc === target || localeHasContent(loc) === false) continue;

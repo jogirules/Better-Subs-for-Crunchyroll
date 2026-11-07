@@ -47,11 +47,37 @@ async function asSearchRaw({ query, titleType, page }) {
   return AS.parseSearch(html);
 }
 
+// Search results are cached for 24 h (without `sh` — it is single-use anyway),
+// so re-opening the panel or flipping back a page costs AnimeSub nothing.
+const AS_CACHE_KEY = 'asSearchCache';
+const AS_CACHE_TTL_MS = 24 * 3600 * 1000;
+const AS_CACHE_MAX = 50;
+async function asCacheGet(key) {
+  const { [AS_CACHE_KEY]: c = {} } = await chrome.storage.local.get(AS_CACHE_KEY);
+  const hit = c[key];
+  return hit && Date.now() - hit.at < AS_CACHE_TTL_MS ? hit : null;
+}
+async function asCachePut(key, value) {
+  const { [AS_CACHE_KEY]: c = {} } = await chrome.storage.local.get(AS_CACHE_KEY);
+  const now = Date.now();
+  c[key] = { ...value, at: now };
+  const keep = Object.entries(c).filter(([, v]) => now - v.at < AS_CACHE_TTL_MS)
+    .sort((a, b) => b[1].at - a[1].at).slice(0, AS_CACHE_MAX);
+  await chrome.storage.local.set({ [AS_CACHE_KEY]: Object.fromEntries(keep) });
+}
+
 async function animesubSearch(payload) {
   const query = String(payload?.query || '').trim();
   if (!query) return { ok: false, error: 'empty-query' };
-  const { results, hasNext } = await asSearchRaw({ query, titleType: payload.titleType, page: payload.page | 0 });
-  // Tokens (sh) are deliberately NOT returned: they expire with the next search.
+  const args = { query, titleType: payload.titleType, page: payload.page | 0 };
+  const key = AS.searchUrl(args);
+  if (!payload.refresh) {
+    const hit = await asCacheGet(key);
+    if (hit) return { ok: true, results: hit.results, hasNext: hit.hasNext, cached: true };
+  }
+  const { results, hasNext } = await asSearchRaw(args);
+  // Tokens (sh) are deliberately NOT returned or cached: they expire with the next search.
+  await asCachePut(key, { results, hasNext });
   return { ok: true, results, hasNext };
 }
 

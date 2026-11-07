@@ -12,8 +12,8 @@
 | 1 | Czyste biblioteki + testy Node: `zip-read` (stored/deflate/LZMA), `animesub` (parser), `legacy-subs` (TMPlayer/MicroDVD/MPL2), `text-decode` | ✅ |
 | 1b | **Wspólna ścieżka „bajty → napisy”** (`lib/sub-ingest.js`) + istniejące „Wczytaj plik” przyjmuje też `.zip`/`.txt`/`.sub` i przeciąganie pliku na odtwarzacz | ✅ (UI wyboru z archiwum i drop — do sprawdzenia na odcinku) |
 | 2 | Spike w service workerze: AnimeSub wyszukaj → pobierz → rozpakuj → zdekoduj; weryfikacja, czy `fetch` z SW niesie ciasteczko `ansi_sciagnij` | ✅ (cookie działa; 3 żądania / 6,7 s) |
-| 3 | RPC `animesubSearch`/`animesubDownload`, kolejka ≥ 3 s między żądaniami, cache wyników 24 h (bez `sh`) | |
-| 4 | UI „Szukaj na AnimeSub”: fraza, typ tytułu, lista wyników, wybór pliku z archiwum; id `custom:animesub` | |
+| 3 | RPC `animesubSearch`/`animesubDownload`, kolejka ≥ 3 s między żądaniami, cache wyników 24 h (bez `sh`) | ✅ (relay sprawdzony w Chromium: szukanie 153 ms, z cache 1 ms, ZIP 6 s) |
+| 4 | UI „Szukaj na AnimeSub”: fraza, typ tytułu, lista wyników, wybór pliku z archiwum; id `custom:animesub` | ✅ kod; panel do sprawdzenia na koncie (bez logowania brak odtwarzacza) |
 | 5 | Tytuł/odcinek ze strony CR + AniList (romaji, cache) | |
 | 6 | Pamięć per odcinek: metadane źródła w rekordzie (`site`, `id`, autor) | |
 | 7 | Instrukcja testów (Kusuriya S3, Frieren) i strojenia synchronizacji | |
