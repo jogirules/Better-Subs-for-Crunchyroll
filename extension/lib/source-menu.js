@@ -593,7 +593,7 @@
         const customs      = ep.listCustomSources?.() ?? [];
         const activeCustom = customs.some(c => c.id === curLocale) && isOverlayActive();
         if (onLoadFile) {
-          menuEl.appendChild(makeActionRow('＋ Load subtitle file…', () => { close(); onLoadFile(); }));
+          menuEl.appendChild(makeActionRow('＋ Load subtitle file / ZIP…', () => { close(); onLoadFile(); }));
         }
         const translateAction = getTranslateAction?.();
         if (translateAction && onTranslate) {

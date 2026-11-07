@@ -101,6 +101,7 @@
   const SIGN_TRACK = NS.signTrack;
   const SUB_SYNC   = NS.subSync;
   const CUSTOM     = NS.customSource;
+  const INGEST     = NS.subIngest;    // bytes → subtitle text (ZIP, encodings, legacy formats)
   const LEARN      = NS.learning;
   const THEME      = NS.uiTheme.tokens;
   const panelStyle = NS.uiTheme.panel;
@@ -668,7 +669,7 @@
     if (!_fileInput) {
       _fileInput = document.createElement('input');
       _fileInput.type   = 'file';
-      _fileInput.accept = '.ass,.ssa,.srt,.vtt,text/plain';
+      _fileInput.accept = '.ass,.ssa,.srt,.vtt,.txt,.sub,.mpl,.zip,text/plain,application/zip';
       _fileInput.style.display = 'none';
       document.documentElement.appendChild(_fileInput);
       _fileInput.addEventListener('change', () => {
@@ -684,18 +685,86 @@
   }
 
   async function ingestSubtitleFile(file) {
+    if (!currentEp()) return;
+    let bytes;
+    try { bytes = new Uint8Array(await file.arrayBuffer()); }
+    catch (err) { showErrorToast('Could not read that subtitle file.'); return; }
+    await ingestSubtitleBytes(bytes, file.name);
+  }
+
+  // Shared by the file picker, drag-and-drop and (later) AnimeSub / Discord:
+  // unpack a ZIP if needed, let the user pick when an archive holds several
+  // subtitle files, decode the text (UTF-8 / CP1250 / ISO-8859-2), convert
+  // legacy formats, then register + select it like an uploaded file.
+  async function ingestSubtitleBytes(bytes, name) {
+    let cands;
+    try { cands = await INGEST.candidatesFrom(bytes, name); }
+    catch (err) { log.warn(`Archive [${name}] unreadable: ${err && err.message}`); showErrorToast('Could not open that archive.'); return; }
+    if (!cands.length) { showErrorToast('No subtitle file inside that archive.'); return; }
+    const cand = cands.length === 1 ? cands[0] : await pickArchiveEntry(cands, name);
+    if (!cand) return;
+    let entryBytes;
+    try { entryBytes = await cand.load(); }
+    catch (err) { log.warn(`Archive entry [${cand.name}] failed: ${err && err.message}`); showErrorToast('Could not unpack that subtitle file.'); return; }
+    const sub = INGEST.toSubtitleText(entryBytes, cand.name);
+    log.info(`Subtitle bytes [${cand.name}] — ${sub.encoding}, ${sub.format}${sub.fps ? ` @ ${sub.fps} fps` : ''}.`);
+    ingestSubtitleText(sub.parseName, sub.text, cand.name);
+  }
+
+  // A small chooser over the player for archives with several subtitle files.
+  // Resolves to the picked candidate, or null on cancel / Escape.
+  function pickArchiveEntry(cands, archiveName) {
+    return new Promise((resolve) => {
+      const panel = document.createElement('div');
+      Object.assign(panel.style, panelStyle({
+        position: 'absolute', zIndex: '2147483646', padding: '12px 14px', width: '360px',
+        maxHeight: '60%', overflowY: 'auto',
+      }));
+      panel.innerHTML =
+        `<div style="font-size:13px;font-weight:700;color:${THEME.accent};margin-bottom:4px;">📦 Choose a subtitle file</div>` +
+        `<div style="font-size:11px;color:#888;margin-bottom:8px;word-break:break-all;">${escapeHtml(archiveName)}</div>` +
+        `<div data-row="list" style="display:flex;flex-direction:column;gap:4px;margin-bottom:10px;"></div>` +
+        `<div data-row="foot" style="display:flex;justify-content:flex-end;"></div>`;
+      let done = false;
+      const onKey = (e) => { if (e.key === 'Escape') finish(null); };
+      function finish(v) {
+        if (done) return;
+        done = true;
+        document.removeEventListener('keydown', onKey);
+        try { panel.remove(); } catch (_) {}
+        resolve(v);
+      }
+      const list = panel.querySelector('[data-row="list"]');
+      for (const c of cands) {
+        const b = syncBtn(`${c.name}  ·  ${Math.max(1, Math.round(c.size / 1024))} kB`);
+        Object.assign(b.style, { textAlign: 'left', width: '100%', wordBreak: 'break-all' });
+        b.addEventListener('click', () => finish(c));
+        list.appendChild(b);
+      }
+      const cancelB = syncBtn('Cancel');
+      cancelB.addEventListener('click', () => finish(null));
+      panel.querySelector('[data-row="foot"]').appendChild(cancelB);
+      const mountTarget = document.fullscreenElement ?? videoEl?.parentElement ?? document.body;
+      if (mountTarget !== document.body && window.getComputedStyle(mountTarget).position === 'static') mountTarget.style.position = 'relative';
+      mountTarget.appendChild(panel);
+      panel.style.left = '50%'; panel.style.top = '12%'; panel.style.transform = 'translateX(-50%)';
+      setTimeout(() => document.addEventListener('keydown', onKey), 0);
+    });
+  }
+
+  // parseName drives format detection (legacy formats arrive as ".srt");
+  // labelName is what the user recognises in the menu.
+  function ingestSubtitleText(parseName, text, labelName) {
     const ep = currentEp();
     if (!ep) return;
-    let text;
-    try { text = await file.text(); }
-    catch (err) { showErrorToast('Could not read that subtitle file.'); return; }
-    const record = CUSTOM.makeLocalSource(file.name, text);
+    const record = CUSTOM.makeLocalSource(parseName, text);
     if (!record) {
-      log.warn(`Uploaded file [${file.name}] parsed to 0 cues.`);
+      log.warn(`Uploaded file [${labelName}] parsed to 0 cues.`);
       showErrorToast('No subtitles found in that file.');
       return;
     }
-    log.info(`Loaded local subtitle file [${file.name}] — ${record.srcCues.length} cues.`);
+    if (labelName) record.label = String(labelName).replace(/\.[^.]+$/, '').slice(0, 40) || record.label;
+    log.info(`Loaded local subtitle file [${labelName}] — ${record.srcCues.length} cues.`);
     // A new file invalidates any half-done translation of the previous one.
     clearMtPartials(ep.guid, CUSTOM_LOCAL_ID);
     ep.addCustomSource(record);
@@ -705,6 +774,29 @@
     // short-circuit to apply the new file's cues live.
     selectSource(CUSTOM_LOCAL_ID, true);
   }
+
+  // Drag-and-drop: drop a subtitle file or ZIP (e.g. saved from Discord) onto a
+  // watch page.  Only claims drags that carry files and only while an Episode
+  // exists, so ordinary page drags are untouched.  Capture phase, so the
+  // player's own handlers can't swallow the drop first.
+  function dragHasFiles(e) {
+    return !!(e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files'));
+  }
+  window.addEventListener('dragover', (e) => {
+    if (!currentEp() || !dragHasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  }, true);
+  window.addEventListener('drop', (e) => {
+    if (!currentEp() || !dragHasFiles(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const file = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file) ingestSubtitleFile(file).catch(err => {
+      log.error('Dropped subtitle file failed:', err);
+      showErrorToast('Could not read that subtitle file.');
+    });
+  }, true);
 
   function removeCustomSource(id) {
     const ep = currentEp();

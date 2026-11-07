@@ -34,8 +34,9 @@ for (const p of [
   'extension/lib/subtitle-parser.js',
   'extension/lib/sign-track.js',
   'extension/lib/custom-source.js',
+  'extension/lib/sub-ingest.js',
 ]) load(p);
-const { animesub: AS, zipRead: ZIP, legacySubs: LEG, textDecode: TD, customSource: CUSTOM } = globalThis.CRSubFix;
+const { animesub: AS, zipRead: ZIP, legacySubs: LEG, textDecode: TD, customSource: CUSTOM, subIngest: ING } = globalThis.CRSubFix;
 const iso2 = (u8) => new TextDecoder('iso-8859-2').decode(u8);
 const PL = 'ąęłóśźżćńĄĘŁÓŚŹŻĆŃ';
 
@@ -152,6 +153,29 @@ section('legacy formats');
   eq('detect mpl2', LEG.detect(mpl), 'mpl2');
   ok('mpl2 deciseconds', LEG.toSrt(mpl).srt.includes('00:00:01,000 --> 00:00:03,500\nKursywa\ndruga'));
   eq('ASS is not legacy', LEG.detect(TD.decodeSubtitleBytes(FX('sample-utf8bom.ass')).text), null);
+}
+
+
+// ── Shared ingest path ─────────────────────────────────────────────────────
+section('sub-ingest');
+{
+  const zip = FX('archive-deflate.zip');
+  ok('isZip on archive', ING.isZip(zip));
+  ok('isZip false on text', !ING.isZip(FX('tmplayer-cp1250.txt')));
+  const cands = await ING.candidatesFrom(zip, 'paczka.zip');
+  eq('archive candidates: subs before readme', cands.map(c => c.name), ['[Grupa] Seria 01.ass', 'readme.txt']);
+  const r = ING.toSubtitleText(await cands[0].load(), cands[0].name);
+  eq('ass keeps its name', r.parseName, '[Grupa] Seria 01.ass');
+  eq('ass format', r.format, 'ass');
+  const single = await ING.candidatesFrom(FX('tmplayer-cp1250.txt'), 'dir/Odcinek 05.txt');
+  eq('single file → one candidate, base name', single.map(c => c.name), ['Odcinek 05.txt']);
+  const t = ING.toSubtitleText(await single[0].load(), single[0].name);
+  eq('tmplayer renamed to .srt for the parser', t.parseName, 'Odcinek 05.srt');
+  eq('tmplayer encoding', t.encoding, 'windows-1250');
+  const rec = CUSTOM.makeLocalSource(t.parseName, t.text);
+  ok('tmplayer → record with Polish text', !!rec && rec.srcCues[0].text.includes('Zażółć'));
+  const m = ING.toSubtitleText(FX('microdvd-cp1250.sub'), 'x.sub', { fps: 25 });
+  eq('microdvd via ingest', [m.format, m.fps], ['microdvd', 25]);
 }
 
 // ── End to end: archive → custom source record ─────────────────────────────
