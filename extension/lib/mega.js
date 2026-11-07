@@ -1,0 +1,396 @@
+/**
+ * lib/mega.js — read-only access to public MEGA folders of fansub groups (fork).
+ *
+ * Polish fansub groups announce releases on Discord but keep the subtitle
+ * files in public MEGA folders (checked 2026-11-07: FrixySubs ~2000 .ass,
+ * FujiSubs ~900 .ass).  A public folder link carries its own key after '#',
+ * so no account or token is involved:
+ *
+ *   1. POST g.api.mega.co.nz/cs?n=<folder>  [{a:'f', c:1, ca:1, r:1}]
+ *      → every node: handle h, parent p, type t (0 file / 1 folder), size s,
+ *        attributes a (AES-CBC, zero IV) and its key k (AES-ECB under the
+ *        folder key; "owner:key" pairs, several separated by '/').
+ *   2. POST …  [{a:'g', g:1, ssl:1, n:<file handle>}] → a download URL.
+ *   3. GET that URL → file bytes, AES-CTR encrypted with the node key.
+ *
+ * Pure crypto/index/search helpers here (aes-js for ECB/CBC; the caller uses
+ * WebCrypto AES-CTR for file bodies).  Network calls live in background.js.
+ */
+(function () {
+  'use strict';
+
+  const NS = (typeof self !== 'undefined' ? self : globalThis);
+  NS.CRSubFix = NS.CRSubFix || {};
+  const aesjs = NS.aesjs;
+
+  const API = 'https://g.api.mega.co.nz/cs';
+
+  // Group folders shipped by default — the "all subtitles" folders the groups
+  // themselves link from their Discord/website.  More can be added by the user.
+  // Order = tie-break order in results (the user's favourite group first).
+  const DEFAULT_FOLDERS = [
+    // Shisha Subs: "Suby" folder pinned on their Discord (#ogólny), 2026-11-07.
+    { group: 'Shisha',    link: 'https://mega.nz/folder/JOBiUJKZ#RuIjBCN-Ha6vxksbKkCf0w' },
+    { group: 'FrixySubs', link: 'https://mega.nz/folder/KQ00iCLb#0jW1zZcli8N-EUtbZszXYw' },
+    { group: 'FujiSubs',  link: 'https://mega.nz/folder/U3ZBTZoZ#wJZumsXp5bzLXc6Hef5PXQ' },
+    // Groups without an "all subtitles" folder: one folder per series, listed
+    // only when the searched title matches `titles` (see seriesMatches).
+    // Max-Subs, from #wydawane-anime on their Discord (2026-11-07; the other
+    // three Max folders were empty or deleted).  BD-timed releases.
+    { group: 'Max-Subs', titles: ['Isekai Nonbiri Nouka'],
+      link: 'https://mega.nz/folder/5sxWQRiZ#nbCQve5zrGAKbEmSqXHeOg' },
+    { group: 'Max-Subs', titles: ['Akuyaku Reijou Level 99'],
+      link: 'https://mega.nz/folder/wh5lmC6a#wAoYUBqux-9BgTGfMN6x1Q' },
+    // Fusoku Subs: "Napisy" folders linked from fusokusubs.blogspot.com posts
+    // (2026-11-07; 48 of 127 linked folders hold subtitles, the rest are video).
+    // Fusoku also uploads every release to AnimeSub.
+    { group: 'Fusoku Subs', titles: ['Mitsuami no Kamisama'],
+      link: 'https://mega.nz/folder/OII1iTZL#lRgKbU9GVQbpBcEM77-hiw' },
+    { group: 'Fusoku Subs', titles: ['Yosuga no Sora'],
+      link: 'https://mega.nz/folder/GcxkiYLa#BX8yq9K5CSCczwxrL3IG8w' },
+    { group: 'Fusoku Subs', titles: ['Hakubo'],
+      link: 'https://mega.nz/folder/HRBTmBoD#l7nnIlA0BNrgSxuDV_2Zlw' },
+    { group: 'Fusoku Subs', titles: ['Suzumiya Haruhi no Yuuutsu'],
+      link: 'https://mega.nz/folder/vdxUWCAL#Fj5WBo3VsBhP7EukOLxDLQ' },
+    { group: 'Fusoku Subs', titles: ['Lycoris Recoil: Friends Are Thieves of Time.'],
+      link: 'https://mega.nz/folder/mRBD1TDb#0otKjl6ZWHS4-KFS9TjdSQ' },
+    { group: 'Fusoku Subs', titles: ['Mayoeru Otokonoko'],
+      link: 'https://mega.nz/folder/HYo1SQTB#R4xjcLSh0B-gf7hT8sNM1A' },
+    { group: 'Fusoku Subs', titles: ['Oedo wa Nemurenai!'],
+      link: 'https://mega.nz/folder/uRx3wIIL#lbyRMfl1W8s0RTJLXrzT1A' },
+    { group: 'Fusoku Subs', titles: ['Oshare Kozou wa Hanamaru'],
+      link: 'https://mega.nz/folder/WMxyWDBZ#8Cw_J7kgG1Y8rDWNfY_o7A' },
+    { group: 'Fusoku Subs', titles: ['Deimos no Hanayome: Ran no Kumikyoku'],
+      link: 'https://mega.nz/folder/vdYFgC4C#eRJHE-ZcZ1dWZFvjJLP7aw' },
+    { group: 'Fusoku Subs', titles: ['Yami Shibai s14'],
+      link: 'https://mega.nz/folder/jAQUFZDS#nu7SnI5cLKae4H80em24Zg' },
+    { group: 'Fusoku Subs', titles: ['Yami Shibai s13'],
+      link: 'https://mega.nz/folder/HY5xlDba#fbpA9cKtZsU1_eUBRm5eZA' },
+    { group: 'Fusoku Subs', titles: ['Kobutori'],
+      link: 'https://mega.nz/folder/fERVxARZ#VoCNaUqqps9jrbruMSUfvQ' },
+    { group: 'Fusoku Subs', titles: ['Warau Hyouteki'],
+      link: 'https://mega.nz/folder/SYRmVKzJ#kLJ3w6EV9bm9nlLNRxtDeg' },
+    { group: 'Fusoku Subs', titles: ['Maabou no Kinoshita Toukichirou'],
+      link: 'https://mega.nz/folder/vdxC1CpA#qP7VZEN4f6xv1mjxoQbz7A' },
+    { group: 'Fusoku Subs', titles: ['Fire Tripper'],
+      link: 'https://mega.nz/folder/KVhRgSZZ#4YyMJh9O5b49mZjptn8yzg' },
+    { group: 'Fusoku Subs', titles: ['Hinomaru Tarou: Musha Shugyou no Maki'],
+      link: 'https://mega.nz/folder/rQJkyB7Y#FQnCW104Yh___Q9YoDRmKA' },
+    { group: 'Fusoku Subs', titles: ['Nihon Animator Mihonichi'],
+      link: 'https://mega.nz/folder/LVggBS4T#7_e1MDxZHOzLgGsky19XrQ' },
+    { group: 'Fusoku Subs', titles: ['Daikaijuu Gamenya Shuurai', 'Yoru wa Neko to Issho'],
+      link: 'https://mega.nz/folder/SVpXzDQC#-fM8ExUEfboLsmNEmF4SyA' },
+    { group: 'Fusoku Subs', titles: ['Kowarekake no Orgel Special'],
+      link: 'https://mega.nz/folder/LM42xQyL#rXnKLn0jD7SdChaPyyDjUg' },
+    { group: 'Fusoku Subs', titles: ['Kowarekake no Orgel'],
+      link: 'https://mega.nz/folder/vExT2QjT#Thud2qyyOqwFXMibZvVxfw' },
+    { group: 'Fusoku Subs', titles: ['Shikanoko Nokonoko Koshitantan'],
+      link: 'https://mega.nz/folder/HAQmFDYI#wYtr-rZ--UAXV-9PLqfCbg' },
+    { group: 'Fusoku Subs', titles: ['Tokidoki Bosotto Russia-go de Dereru Tonari no Alya-san'],
+      link: 'https://mega.nz/folder/CQ5jVIQJ#CgQ7ktigwC97JuqnR6T6UQ' },
+    { group: 'Fusoku Subs', titles: ['Maabou no Daikyousou'],
+      link: 'https://mega.nz/folder/TFpA3RjZ#1lr6YqRgdESIjdj6aLlNQw' },
+    { group: 'Fusoku Subs', titles: ['Bouken Dankichi: Hyouryuu no Maki'],
+      link: 'https://mega.nz/folder/XMQw0ZrZ#En97k7EsIEbDNq_97RgiQg' },
+    { group: 'Fusoku Subs', titles: ['Hinomaru Hatanosuke: Inazuma-gumi Toubatsu no Maki'],
+      link: 'https://mega.nz/folder/HNhTVLqI#J5q3-gVt-RzmYZYEer9idg' },
+    { group: 'Fusoku Subs', titles: ['Hinomaru Hatanosuke: Bakemono Yashiki no Maki'],
+      link: 'https://mega.nz/folder/mZQgXIKD#7cV6Q2bGeGcq04oPONfZzw' },
+    { group: 'Fusoku Subs', titles: ['Furudera no Obake-soudou'],
+      link: 'https://mega.nz/folder/XFpA2SIT#zZwkRtQJQ_gkxFi_m5kn7Q' },
+    { group: 'Fusoku Subs', titles: ['Dekobou no Jidousha Ryokou'],
+      link: 'https://mega.nz/folder/HRQUAC6a#xnoIlFsJ1wWJHbI2i7VUFg' },
+    { group: 'Fusoku Subs', titles: ['Sousou no Frieren: Marumaru no Mahou'],
+      link: 'https://mega.nz/folder/eBw2BTRQ#v3HKDRYK2y71CTwqMnKpsg' },
+    { group: 'Fusoku Subs', titles: ['Ore dake Level Up na Ken'],
+      link: 'https://mega.nz/folder/GBRA2SLC#3vRvNTSqSJNpiqgEd5j6yA' },
+    { group: 'Fusoku Subs', titles: ['Yami Shibai s12'],
+      link: 'https://mega.nz/folder/fVxiBKZQ#rlKz8Xz20_BvPzlA1FdLuw' },
+    { group: 'Fusoku Subs', titles: ['Hanbun no Tsuki ga Noboru Sora'],
+      link: 'https://mega.nz/folder/XRJxlIDA#lksNu5tUvncfPeVhAzBteQ' },
+    { group: 'Fusoku Subs', titles: ['Angel Densetsu'],
+      link: 'https://mega.nz/folder/3NwXDJ5L#jWz-SMxSYpE_iuu37jAEPQ' },
+    { group: 'Fusoku Subs', titles: ['Kanojo to Kanojo no Neko: Everything Flows'],
+      link: 'https://mega.nz/folder/3dpGVT5C#MaXArlwXuB05h_MVp360RA' },
+    { group: 'Fusoku Subs', titles: ['Fumiko no Kokuhaku'],
+      link: 'https://mega.nz/folder/CIJ3URQZ#FlWHCzHFCocvIeOhE9966Q' },
+    { group: 'Fusoku Subs', titles: ['Hametsu no Oukoku'],
+      link: 'https://mega.nz/folder/Wd5G0TBT#KnBC2vn_MxZQpMnpHTHZ8Q' },
+    { group: 'Fusoku Subs', titles: ['Konyaku Haki sareta Reijou wo Hirotta Ore ga, Ikenai Koto wo Oshiekomu'],
+      link: 'https://mega.nz/folder/CVB3DY5J#hpWNOYxY8lBJFkmX7Y3bpQ' },
+    { group: 'Fusoku Subs', titles: ['Sousou no Frieren'],
+      link: 'https://mega.nz/folder/eYQRXIrT#Yr1J26ImPPPVxuK8-GrVCQ' },
+    { group: 'Fusoku Subs', titles: ['Zunda Horizon'],
+      link: 'https://mega.nz/folder/vUQWHazb#ZwXWUgcfk3Jnd8RGaiQxMg' },
+    { group: 'Fusoku Subs', titles: ['A-Girl'],
+      link: 'https://mega.nz/folder/PJwEAZLb#5N5cEDYn55bBX93U8CuZ3A' },
+    { group: 'Fusoku Subs', titles: ['Yotsunoha'],
+      link: 'https://mega.nz/folder/XNARRZ5J#qYqcprskP1yzL25MogxgLw' },
+    { group: 'Fusoku Subs', titles: ['Ichigatsu ni wa Christmas'],
+      link: 'https://mega.nz/folder/TNZkSQyT#UxGf2MwI5dPXhgzWHDcR_w' },
+    { group: 'Fusoku Subs', titles: ['Sequence'],
+      link: 'https://mega.nz/folder/edg0DRoB#OzsGt-BH4hklmlzCnsHsuA' },
+    { group: 'Fusoku Subs', titles: ['Yami Shibai s11'],
+      link: 'https://mega.nz/folder/bEwTXCAb#c0X57fHpT3-ZdwAQ7ByijQ' },
+    { group: 'Fusoku Subs', titles: ['Aiyou de Mishi'],
+      link: 'https://mega.nz/folder/GEpCXTTQ#dPWODHGJURJyAcb84ljC8Q' },
+    { group: 'Fusoku Subs', titles: ['Amrita no Kyouen'],
+      link: 'https://mega.nz/folder/GAoWGITZ#76w-ABuvz6rj0e3n72gKlg' },
+    { group: 'Fusoku Subs', titles: ['Kanojo ga Koushaku-tei ni Itta Riyuu'],
+      link: 'https://mega.nz/folder/uEo2gLhJ#J2xW1L2rjoLLKZlvMyVEmw' },
+    { group: 'Fusoku Subs', titles: ['Otonari ni Ginga'],
+      link: 'https://mega.nz/folder/nIhzER6a#KbJh5d80N0MEFffskjl1SA' },
+  ];
+
+  const SUB_EXT = /\.(ass|ssa|srt|vtt|txt|sub|mpl|zip)$/i;
+
+  // https://mega.nz/folder/<handle>#<key>  (also the legacy #F!<handle>!<key>)
+  function parseFolderLink(link) {
+    const s = String(link || '').trim();
+    let m = /mega\.nz\/folder\/([A-Za-z0-9_-]{8})#([A-Za-z0-9_-]{22})/.exec(s)
+         || /mega\.nz\/#F!([A-Za-z0-9_-]{8})!([A-Za-z0-9_-]{22})/.exec(s);
+    if (!m) return null;
+    return { handle: m[1], keyB64: m[2] };
+  }
+
+  function b64urlDecode(s) {
+    const t = String(s).replace(/-/g, '+').replace(/_/g, '/').replace(/,/g, '');
+    const pad = t + '==='.slice((t.length + 3) % 4);
+    const bin = atob(pad);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  function b64Encode(u8) {
+    let s = '';
+    for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+    return btoa(s);
+  }
+
+  const ecbDecrypt = (key, data) => new aesjs.ModeOfOperation.ecb(key).decrypt(data);
+  const cbcDecryptZeroIv = (key, data) => new aesjs.ModeOfOperation.cbc(key, new Uint8Array(16)).decrypt(data);
+
+  // A file's 32-byte node key folds into a 16-byte AES key; the next 8 bytes
+  // are the CTR nonce.  Folder keys are already 16 bytes.
+  function fileAesKey(k32) {
+    const out = new Uint8Array(16);
+    for (let i = 0; i < 16; i++) out[i] = k32[i] ^ k32[16 + i];
+    return out;
+  }
+  function fileCtrIv(k32) {
+    const iv = new Uint8Array(16);
+    iv.set(k32.subarray(16, 24), 0);
+    return iv;
+  }
+
+  function decodeAttr(aesKey, aB64) {
+    const raw = b64urlDecode(aB64);
+    if (!raw.length || raw.length % 16) return null;
+    const txt = new TextDecoder().decode(cbcDecryptZeroIv(aesKey, raw)).replace(/\0+$/, '');
+    if (!txt.startsWith('MEGA{')) return null;
+    try { return JSON.parse(txt.slice(4)); } catch (_) { return null; }
+  }
+
+  // API listing → [{ h, p, t, s, name, k }] (k: the decrypted node key; nodes
+  // whose key or name can't be recovered are dropped).
+  function decryptListing(listing, folderKeyB64) {
+    const fk = b64urlDecode(folderKeyB64);
+    const out = [];
+    for (const n of (listing && listing.f) || []) {
+      const want = n.t === 0 ? 32 : 16;
+      for (const part of String(n.k || '').split('/')) {
+        const enc = b64urlDecode(part.slice(part.indexOf(':') + 1));
+        if (enc.length !== want) continue;
+        const k = ecbDecrypt(fk, enc);
+        const attr = decodeAttr(n.t === 0 ? fileAesKey(k) : k, n.a);
+        if (attr && typeof attr.n === 'string') { out.push({ h: n.h, p: n.p, t: n.t, s: n.s || 0, name: attr.n, k }); break; }
+      }
+    }
+    return out;
+  }
+
+  // Subtitle files with their full path — what the SW caches and searches.
+  function buildIndex(nodes) {
+    const byH = new Map(nodes.map((n) => [n.h, n]));
+    const pathOf = (n) => {
+      const parts = [];
+      for (let x = byH.get(n.p), guard = 0; x && guard < 64; x = byH.get(x.p), guard++) parts.unshift(x.name);
+      return parts.join('/');
+    };
+    return nodes
+      .filter((n) => n.t === 0 && SUB_EXT.test(n.name))
+      .map((n) => ({ h: n.h, dir: pathOf(n), name: n.name, size: n.s, k: b64Encode(n.k) }));
+  }
+
+  // ── Search ────────────────────────────────────────────────────────────────
+  // Season spellings fold to "season N" (same idea as title-map's resultsMatch).
+  function words(s) {
+    return String(s || '').toLowerCase()
+      .replace(/[×✕]/g, ' x ')
+      .replace(/\b(\d+)(?:st|nd|rd|th)\s+season\b/g, 'season $1')
+      .replace(/\bs(\d{1,2})(?=e\d|\b)/g, ' season $1 ')
+      .replace(/\bseason\s*0*(\d+)/g, 'season $1')
+      .split(/[^a-z0-9]+/).filter(Boolean)
+      // Roman season numerals ("Mushoku Tensei III", Shisha's folders).  Not
+      // "x"/"v"/"i": those are words too ("Spy x Family").
+      .flatMap((w) => ROMAN[w] ? ['season', String(ROMAN[w])] : [w]);
+  }
+  const ROMAN = { ii: 2, iii: 3, iv: 4, vi: 6, vii: 7, viii: 8, ix: 9 };
+  function seasonOf(ws) {
+    const i = ws.indexOf('season');
+    return i >= 0 && /^\d+$/.test(ws[i + 1] || '') ? +ws[i + 1] : null;
+  }
+  // Numbers in a file name that can be an episode (not 1080/720/x265/years).
+  function episodeNumbers(name) {
+    const base = name.replace(/\.[^.]+$/, '');
+    const out = new Set();
+    const se = /s\d{1,2}e(\d{1,4})/ig;
+    for (let m; (m = se.exec(base));) out.add(+m[1]);
+    for (const m of base.matchAll(/(?:^|[^0-9a-z])(?:ep?|odc)?\s*0*(\d{1,4})(?![0-9])/ig)) {
+      const n = +m[1];
+      if (n === 0 || n === 480 || n === 720 || n === 1080 || n === 2160 || n === 264 || n === 265 || (n >= 1900 && n <= 2100)) continue;
+      out.add(n);
+    }
+    return out;
+  }
+
+  // query: { title, episodes: [n…] }  → ranked index entries (+ group).
+  //   Every title word (season words aside) must appear in the folder path or
+  //   file name; a different explicit season excludes the file; with episodes
+  //   given, the file name must carry one of them.
+  function search(index, { title, episodes } = {}, limit = 40) {
+    const hits = searchStrict(index, title, episodes, limit);
+    if (hits.length) return hits;
+    // Groups shorten long titles: "Mushoku Tensei: Isekai Ittara Honki Dasu
+    // Season 3" is filed as "Mushoku Tensei III".  Retry with the part before
+    // the colon / dash (plus the season), if that part is specific enough.
+    const m = /^(.+?)\s*[:：]|^(.+?)\s+[-–]\s/.exec(String(title || ''));
+    const head = m && (m[1] || m[2]);
+    if (!head) return hits;
+    const hw = words(head);
+    if (hw.length < 2 && head.replace(/[^a-z0-9]/gi, '').length < 5) return hits;
+    const season = seasonOf(words(title));
+    return searchStrict(index, head + (season && !seasonOf(hw) ? ` season ${season}` : ''), episodes, limit);
+  }
+  function searchStrict(index, title, episodes, limit) {
+    const tw = words(title);
+    const season = seasonOf(tw);
+    const core = tw.filter((w, i) => w !== 'season' && !(tw[i - 1] === 'season'));
+    if (!core.length) return [];
+    const eps = (episodes || []).filter((n) => Number.isInteger(n) && n > 0);
+    const hits = [];
+    for (const f of index) {
+      const pw = words(f.dir + ' ' + f.name);
+      const set = new Set(pw);
+      if (!core.every((w) => set.has(w))) continue;
+      const fs = seasonOf(pw);
+      if (season && season > 1 && fs !== season) continue;
+      if ((!season || season === 1) && fs && fs > 1) continue;
+      let score = 1;
+      if (eps.length) {
+        const nums = episodeNumbers(f.name);
+        const hit = eps.findIndex((e) => nums.has(e));
+        if (hit < 0) continue;
+        score += hit === 0 ? 2 : 1;
+      }
+      if (/\.(ass|ssa)$/i.test(f.name)) score += 0.5;
+      hits.push({ ...f, score });
+    }
+    hits.sort((a, b) => b.score - a.score || (a.order ?? 0) - (b.order ?? 0) || (a.dir + a.name).localeCompare(b.dir + b.name));
+    return hits.slice(0, limit);
+  }
+
+  // Does a per-series folder (its `titles`) belong to this search?  Either
+  // side may be the longer one: "Akuyaku Reijou Level 99" vs AniList's
+  // "Akuyaku Reijou Level 99: Watashi wa Ura-Boss desu ga Maou dewa Arimasen".
+  function seriesMatches(titles, query) {
+    const core = (t) => { const w = words(t); return w.filter((x, i) => x !== 'season' && w[i - 1] !== 'season'); };
+    const q = new Set(core(query));
+    if (!q.size) return false;
+    return (titles || []).some((t) => {
+      const tw = core(t);
+      if (!tw.length) return false;
+      if (tw.every((w) => q.has(w))) return true;
+      // A shorter query must still name most of the series ("Nonbiri Nouka").
+      return [...q].every((w) => tw.includes(w)) && q.size >= 0.6 * tw.length;
+    });
+  }
+
+  // ── Group fonts ───────────────────────────────────────────────────────────
+  // Groups keep each series' fonts in a sub-folder ("Czcionki", "Fonty",
+  // "<Series> Fonty", "Czcionka") or loose in the series folder.
+  const FONT_EXT = /\.(ttf|otf|ttc)$/i;
+  const FONT_DIR = /czcion|font/i;
+  function buildFontIndex(nodes) {
+    const byH = new Map(nodes.map((n) => [n.h, n]));
+    const pathOf = (n) => {
+      const parts = [];
+      for (let x = byH.get(n.p), guard = 0; x && guard < 64; x = byH.get(x.p), guard++) parts.unshift(x.name);
+      return parts.join('/');
+    };
+    return nodes
+      .filter((n) => n.t === 0 && FONT_EXT.test(n.name) && n.s <= 40e6)
+      .map((n) => ({ h: n.h, dir: pathOf(n), name: n.name, size: n.s, k: b64Encode(n.k) }));
+  }
+  // The series folder a font belongs to: its dir minus trailing font folders.
+  function fontBase(dir) {
+    const parts = String(dir || '').split('/');
+    while (parts.length && FONT_DIR.test(parts[parts.length - 1])) parts.pop();
+    return parts.join('/');
+  }
+  // Fonts for a subtitle at `dir`: those whose series folder is the deepest
+  // ancestor (or equal) of `dir`.  A base holding more than `maxSubDirs`
+  // subtitle folders is a group-wide root, not a series — skipped.
+  function fontsForDir(fonts, subs, dir, maxSubDirs = 40) {
+    const under = (base) => !base || dir === base || dir.startsWith(base + '/');
+    let best = null;
+    for (const f of fonts) {
+      const b = fontBase(f.dir);
+      if (under(b) && (best === null || b.length > best.length)) best = b;
+    }
+    if (best === null) return [];
+    const subDirs = new Set((subs || []).filter((s) => !best || s.dir === best || s.dir.startsWith(best + '/')).map((s) => s.dir));
+    if (subDirs.size > maxSubDirs) return [];
+    return fonts.filter((f) => fontBase(f.dir) === best);
+  }
+  // Fonts for a title (subtitles from AnimeSub): series folders whose last
+  // path segment is this title; the same season first.
+  function fontBasesForTitle(fonts, title) {
+    const want = seasonOf(words(title));
+    const bases = new Map();
+    for (const f of fonts) {
+      const b = fontBase(f.dir);
+      if (!bases.has(b)) bases.set(b, []);
+      bases.get(b).push(f);
+    }
+    const out = [];
+    for (const [b, list] of bases) {
+      const seg = b.split('/').pop();
+      if (!seg || !seriesMatches([seg], title)) continue;
+      const s = seasonOf(words(seg));
+      out.push({ base: b, fonts: list, rank: (s ?? 1) === (want ?? 1) ? 0 : 1 });
+    }
+    return out.sort((a, b) => a.rank - b.rank);
+  }
+  // How likely a font file is one of `needed` (normalized names) by file name
+  // alone — orders downloads so the right files usually come first.
+  function fontFileHint(name, needed) {
+    const n = String(name).replace(FONT_EXT, '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    let best = 0;
+    for (const w of needed) {
+      const k = w.replace(/[^a-z0-9]+/g, '');
+      if (!k) continue;
+      if (n === k) return 3;
+      if (n.startsWith(k) || k.startsWith(n)) best = Math.max(best, 2);
+      else if (n.includes(k) || (n.length >= 4 && k.includes(n))) best = Math.max(best, 1);
+    }
+    return best;
+  }
+
+  NS.CRSubFix.mega = {
+    buildFontIndex, fontBase, fontsForDir, fontBasesForTitle, fontFileHint,
+    seriesMatches,
+    API, DEFAULT_FOLDERS, parseFolderLink, b64urlDecode, b64Encode,
+    decryptListing, buildIndex, search, episodeNumbers, fileAesKey, fileCtrIv,
+  };
+})();

@@ -1,10 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Better Subs for Crunchyroll",
-  "version": "3.0.0",
+  "version": "3.0.0.7",
   "description": "Mix and match subtitle and audio languages on Crunchyroll, with a custom subtitle overlay and adjustable size, sync, and style.",
   "minimum_chrome_version": "111",
-  "permissions": ["storage", "activeTab"],
+  "permissions": ["storage", "unlimitedStorage", "activeTab"],
+  "host_permissions": [
+    "http://animesub.info/*", "https://graphql.anilist.co/*",
+    "https://g.api.mega.co.nz/*", "https://*.userstorage.mega.co.nz/*"
+  ],
   "optional_host_permissions": [
     "https://api-free.deepl.com/*",
     "https://api.deepl.com/*"
@@ -48,6 +52,13 @@
         "lib/subtitle-parser.js",
         "lib/sign-track.js",
         "lib/custom-source.js",
+        "lib/vendor/lzma-d.js",
+        "lib/zip-read.js",
+        "lib/text-decode.js",
+        "lib/legacy-subs.js",
+        "lib/sub-ingest.js",
+        "lib/animesub.js",
+        "lib/title-map.js",
         "lib/subtitle-catalog.js",
         "lib/episode.js",
         "lib/overlay-ui.js",

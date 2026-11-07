@@ -40,6 +40,8 @@
   // The single upload slot — re-uploading replaces this id (see selectSource's
   // force path), so a viewing only ever holds one local file at a time.
   const LOCAL_ID = 'custom:local';
+  const ANIMESUB_ID = 'custom:animesub';   // fork: AnimeSub download slot
+  const MEGA_ID = 'custom:mega';           // fork: group MEGA folder download slot
 
   const isCustomId = (id) => typeof id === 'string' && id.startsWith('custom:');
 
@@ -48,11 +50,15 @@
     return String(name || '').replace(/\.[^.]+$/, '').slice(0, 40);
   }
 
-  function makeLocalSource(filename, text) {
+  // opts.id / opts.origin (fork): an AnimeSub download uses its own slot
+  // ('custom:animesub') so it coexists with a hand-loaded file, and records
+  // where it came from ({ site, id, author, title }) for the menu and memory.
+  function makeLocalSource(filename, text, opts) {
     const cues = parseSubtitles(text, filename);
     if (!cues.length) return null;
     return {
-      id:      LOCAL_ID,
+      ...(opts && opts.origin ? { origin: opts.origin } : {}),
+      id:      (opts && opts.id) || LOCAL_ID,
       kind:    'local',
       label:   labelFromFilename(filename) || 'Uploaded file',
       lang:    null,
@@ -94,5 +100,5 @@
     return cues.map((c, k) => ({ ...c, text: out[k] || c.text, srcText: c.text }));
   }
 
-  NS.CRSubFix.customSource = { LOCAL_ID, isCustomId, makeLocalSource, makeMtSource, planMtJob, mtCuesFrom };
+  NS.CRSubFix.customSource = { LOCAL_ID, ANIMESUB_ID, MEGA_ID, isCustomId, makeLocalSource, makeMtSource, planMtJob, mtCuesFrom };
 })();

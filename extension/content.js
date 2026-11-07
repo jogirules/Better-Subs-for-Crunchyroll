@@ -29,6 +29,11 @@
 
   const SETTINGS = self.CRSubFix.settings;
   const { ATTR, STATUS, MSG, POST } = self.CRSubFix.protocol;
+  // Fork: MAIN-world RPC methods executed by the SW (host permissions + cookie jar live there).
+  const SW_METHODS = {
+    animesubSearch: MSG.AS_SEARCH, animesubDownload: MSG.AS_DOWNLOAD, animesubTitle: MSG.AS_TITLE,
+    megaSearch: MSG.MEGA_SEARCH, megaDownload: MSG.MEGA_DOWNLOAD, megaFolders: MSG.MEGA_FOLDERS,
+  };
 
   // CR's framework strips our custom data-* attribute off <html> during
   // hydration, which would null the toggle token and make us reject every
@@ -140,6 +145,18 @@
       } catch (e) {
         reply({ ok: false, error: String(e && e.message) });
       }
+    } else if (Object.hasOwn(SW_METHODS, data.method)) {
+      // Fork: AnimeSub.info search / download and the AniList title lookup,
+      // executed by the SW (host permissions + cookie jar live there).
+      const type = SW_METHODS[data.method];
+      try {
+        chrome.runtime.sendMessage({ type, payload: data.payload }, (res) => {
+          const err = chrome.runtime.lastError;
+          reply(err ? { ok: false, error: err.message } : (res || { ok: false, error: 'no-response' }));
+        });
+      } catch (e) {
+        reply({ ok: false, error: String(e && e.message) });
+      }
     } else {
       reply({ ok: false, error: 'unknown-method' });
     }
@@ -214,7 +231,46 @@
     if (s.sign_styleOverride && s.sign_overrideFontFamily) {
       return { fallbackFont: signFontFileUrl(s.sign_overrideFontFamily) };
     }
-    return { fallbackFont: FONT_TIMES(), availableFonts: AVAILABLE_FONTS() };
+    const fonts = [...groupFonts.values()].map((f) => f.url);
+    return { fallbackFont: FONT_TIMES(), availableFonts: AVAILABLE_FONTS(), ...(fonts.length ? { fonts } : {}) };
+  }
+
+  // ── Fansub group fonts (fork) ──────────────────────────────────────────────
+  // The MAIN world names the fonts the active custom .ass uses and where its
+  // group keeps them; the SW fetches the matching files from MEGA.  Each font
+  // becomes a same-origin blob URL (libass loads it into its FS — the blob
+  // worker runs at the page origin) and a FontFace on the document (the CSS
+  // dialogue overlay uses the .ass Fontname as font-family).  Fonts stay loaded
+  // for the page's lifetime; libass only uses the ones a track names.
+  const groupFonts = new Map();   // MEGA file handle → { url, faces }
+  let groupFontReqKey = null;
+  async function loadGroupFonts(req) {
+    const key = JSON.stringify(req);
+    if (!req || key === groupFontReqKey || !extensionAlive()) return;
+    groupFontReqKey = key;
+    let res;
+    // A failed request un-latches, so the next activation of this track retries.
+    const unlatch = () => { if (groupFontReqKey === key) groupFontReqKey = null; };
+    try { res = await chrome.runtime.sendMessage({ type: MSG.MEGA_FONTS, payload: req }); }
+    catch (e) { unlatch(); if (!isCtxDead(e)) console.warn('[CR Sub Fix] group fonts failed', e); return; }
+    if (!res || !res.ok) { unlatch(); console.warn('[CR Sub Fix] group fonts:', res && res.error); return; }
+    let added = 0;
+    for (const f of res.fonts || []) {
+      if (groupFonts.has(f.h)) continue;
+      const bytes = Uint8Array.from(atob(f.base64), (c) => c.charCodeAt(0));
+      groupFonts.set(f.h, { url: URL.createObjectURL(new Blob([bytes], { type: 'font/ttf' })), faces: f.faces });
+      for (const fc of f.faces || []) for (const n of fc.names) {
+        try {
+          const ff = new FontFace(n, bytes, { weight: String(fc.weight || 400), style: fc.italic ? 'italic' : 'normal' });
+          document.fonts.add(ff);
+          ff.load().catch(() => {});
+        } catch (_) {}
+      }
+      added++;
+    }
+    console.info(`[CR Sub Fix] group fonts: +${added} (${groupFonts.size} loaded)` +
+      (res.from ? ` from ${res.from}` : '') + (res.missing?.length ? `; not found: ${res.missing.join(', ')}` : ''));
+    if (added) refreshOctopusStyle();
   }
 
   // CSS #rrggbb + 0-100 opacity → ASS &HAABBGGRR (alpha inverted: 00=opaque).
@@ -400,6 +456,22 @@
     if (!token || data.token !== token) { console.warn('[CR Sub Fix] sign msg rejected — token mismatch'); return; }
     dlog('[CR Sub Fix] sign layer ←', data.ass ? (data.ass.length + ' chars') : 'cleared');
     setOctopusAss(data.ass || null);   // async; fire-and-forget
+  });
+
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    const data = event.data;
+    if (!data || data.type !== POST.FONTS) return;
+    const token = toggleToken();
+    if (!token || data.token !== token) return;
+    const r = data.req || {};
+    const req = {
+      folder: typeof r.folder === 'string' ? r.folder.slice(0, 16) : undefined,
+      dir:    typeof r.dir === 'string' ? r.dir.slice(0, 500) : undefined,
+      title:  typeof r.title === 'string' ? r.title.slice(0, 200) : undefined,
+      names:  (Array.isArray(r.names) ? r.names : []).filter((n) => typeof n === 'string').slice(0, 100).map((n) => n.slice(0, 100)),
+    };
+    if (req.names.length) loadGroupFonts(req);
   });
 
   // ── Message relay ──────────────────────────────────────────────────────────

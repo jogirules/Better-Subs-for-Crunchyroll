@@ -23,6 +23,9 @@ jobs:
       - name: Signs-track tests
         run: node tools/test-buildsigns.mjs
 
+      - name: AnimeSub source tests
+        run: node tools/test-animesub.mjs
+
       - name: iso-bundle up to date
         run: |
           node tools/build-iso-bundle.mjs

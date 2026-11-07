@@ -205,6 +205,13 @@
     GET_DIAG:     'GET_DIAGNOSTICS',  // popup       → content (issue-report bundle)
     SET_BADGE:    'setBadge',         // content     → background (badge update)
     MT_TRANSLATE: 'MT_TRANSLATE',     // content     → background (translate a batch)
+    AS_SEARCH:    'AS_SEARCH',        // content     → background (AnimeSub search)
+    AS_DOWNLOAD:  'AS_DOWNLOAD',      // content     → background (AnimeSub ZIP, base64)
+    AS_TITLE:     'AS_TITLE',         // content     → background (AniList romaji for a CR season)
+    MEGA_SEARCH:  'MEGA_SEARCH',      // content     → background (search group MEGA folders)
+    MEGA_DOWNLOAD:'MEGA_DOWNLOAD',    // content     → background (decrypted file, base64)
+    MEGA_FOLDERS: 'MEGA_FOLDERS',     // content     → background (list/add/remove folder links)
+    MEGA_FONTS:   'MEGA_FONTS',       // content     → background (group fonts an .ass names)
   };
 
   // window.postMessage `type` values sent between content.js (isolated world)
@@ -223,6 +230,9 @@
     // survives reload and the popup reflects it.  content.js validates the key
     // against the schema, so the page can't write arbitrary storage.
     SET_SETTING:   'CR_SUB_SET_SETTING',
+    // MAIN → content: {req:{folder?, dir?, title?, names[]}, token} — load the
+    // fansub group's fonts the active custom subtitle names (libass + CSS).
+    FONTS:         'CR_SUB_FONTS',
   };
 
   const protocol = { ATTR, STATUS, MSG, POST };

@@ -101,6 +101,9 @@
   const SIGN_TRACK = NS.signTrack;
   const SUB_SYNC   = NS.subSync;
   const CUSTOM     = NS.customSource;
+  const INGEST     = NS.subIngest;    // bytes → subtitle text (ZIP, encodings, legacy formats)
+  const AS_LIB     = NS.animesub;     // fork: AnimeSub query helpers
+  const TITLE_MAP  = NS.titleMap;     // fork: CR episode → AniList romaji query
   const LEARN      = NS.learning;
   const THEME      = NS.uiTheme.tokens;
   const panelStyle = NS.uiTheme.panel;
@@ -452,7 +455,9 @@
       else if (name === 'official') saveSetting('hideOfficialSubs', !on);
     },
     onLoadFile:      ()       => promptLoadFile(),
-    onRemoveCustom:  (id)     => removeCustomSource(id),
+    onSearchAnimesub: ()      => openAnimesubPanel(),
+    onSearchMega:    ()       => openMegaPanel(),
+    onRemoveCustom:  (id)     => { if (STORAGE.lsGet(EP_SRC_PREFIX + currentEp()?.guid)?.id === id) rememberEpSource(currentEp(), null); removeCustomSource(id); },
     onAdjustSync:    (id)     => openSyncPanel(id),
     // Per-track timing nudge — available whenever subtitles are showing.
     onAdjustTiming:  ()       => openTimingPanel(),
@@ -649,8 +654,18 @@
       stopSync();
     }
     cur.setActiveSource(locale);
+    rememberEpSource(cur, locale);
     if (!isCustomId(locale)) {
       try { localStorage.setItem(LOCALE_PREF_KEY, locale); } catch (_) {}
+    } else if (isEnabled() && !isHideOfficialSubs()) {
+      // Fork (AnimeSub/Discord/file): the current CR player burns its own
+      // subtitles into the video for the account's language, so an external
+      // track would be drawn over a second, burned-in one.  Picking a custom
+      // source therefore switches on the existing hide-official setting, whose
+      // handler moves to the subtitle-free stream (live, or via a reload toast).
+      // It stays a normal user setting: ▾ Show → "Crunchyroll's own subtitles".
+      log.info('Custom source selected — enabling hide-official to avoid burned-in duplicates.');
+      saveSetting('hideOfficialSubs', true);
     }
     cur.clearCues();
     renderer.invalidate();
@@ -668,7 +683,7 @@
     if (!_fileInput) {
       _fileInput = document.createElement('input');
       _fileInput.type   = 'file';
-      _fileInput.accept = '.ass,.ssa,.srt,.vtt,text/plain';
+      _fileInput.accept = '.ass,.ssa,.srt,.vtt,.txt,.sub,.mpl,.zip,text/plain,application/zip';
       _fileInput.style.display = 'none';
       document.documentElement.appendChild(_fileInput);
       _fileInput.addEventListener('change', () => {
@@ -683,28 +698,668 @@
     _fileInput.click();
   }
 
+  // Subtitle files and archives only, and small: a dropped video must not be
+  // read into memory.
+  const INGEST_EXT = /\.(ass|ssa|srt|vtt|txt|sub|mpl|zip)$/i;
+  const INGEST_MAX = 20 * 1024 * 1024;
   async function ingestSubtitleFile(file) {
+    if (!currentEp()) return;
+    if (!INGEST_EXT.test(file.name || '')) { showErrorToast('To nie jest plik napisów (.ass/.srt/.txt/.sub/.zip).'); return; }
+    if (file.size > INGEST_MAX) { showErrorToast('Plik jest za duży jak na napisy.'); return; }
+    let bytes;
+    try { bytes = new Uint8Array(await file.arrayBuffer()); }
+    catch (err) { showErrorToast('Could not read that subtitle file.'); return; }
+    await ingestSubtitleBytes(bytes, file.name);
+  }
+
+  // Shared by the file picker, drag-and-drop and (later) AnimeSub / Discord:
+  // unpack a ZIP if needed, let the user pick when an archive holds several
+  // subtitle files, decode the text (UTF-8 / CP1250 / ISO-8859-2), convert
+  // legacy formats, then register + select it like an uploaded file.
+  async function ingestSubtitleBytes(bytes, name, opts) {
+    let cands;
+    try { cands = await INGEST.candidatesFrom(bytes, name); }
+    catch (err) { log.warn(`Archive [${name}] unreadable: ${err && err.message}`); showErrorToast('Could not open that archive.'); return; }
+    if (!cands.length) { showErrorToast('No subtitle file inside that archive.'); return; }
+    const cand = cands.length === 1 ? cands[0] : await pickArchiveEntry(cands, name);
+    if (!cand) return;
+    let entryBytes;
+    try { entryBytes = await cand.load(); }
+    catch (err) { log.warn(`Archive entry [${cand.name}] failed: ${err && err.message}`); showErrorToast('Could not unpack that subtitle file.'); return; }
+    const sub = INGEST.toSubtitleText(entryBytes, cand.name);
+    log.info(`Subtitle bytes [${cand.name}] — ${sub.encoding}, ${sub.format}${sub.fps ? ` @ ${sub.fps} fps` : ''}.`);
+    ingestSubtitleText(sub.parseName, sub.text, cand.name, opts);
+  }
+
+  // A small chooser over the player for archives with several subtitle files.
+  // Resolves to the picked candidate, or null on cancel / Escape.
+  function pickArchiveEntry(cands, archiveName) {
+    return new Promise((resolve) => {
+      const panel = document.createElement('div');
+      Object.assign(panel.style, panelStyle({
+        position: 'absolute', zIndex: '2147483646', padding: '12px 14px', width: '360px',
+        maxHeight: '60%', overflowY: 'auto',
+      }));
+      panel.innerHTML =
+        `<div style="font-size:13px;font-weight:700;color:${THEME.accent};margin-bottom:4px;">📦 Choose a subtitle file</div>` +
+        `<div style="font-size:11px;color:#888;margin-bottom:8px;word-break:break-all;">${escapeHtml(archiveName)}</div>` +
+        `<div data-row="list" style="display:flex;flex-direction:column;gap:4px;margin-bottom:10px;"></div>` +
+        `<div data-row="foot" style="display:flex;justify-content:flex-end;"></div>`;
+      let done = false;
+      const onKey = (e) => { if (e.key === 'Escape') finish(null); };
+      function finish(v) {
+        if (done) return;
+        done = true;
+        document.removeEventListener('keydown', onKey);
+        try { panel.remove(); } catch (_) {}
+        resolve(v);
+      }
+      const list = panel.querySelector('[data-row="list"]');
+      for (const c of cands) {
+        const b = syncBtn(`${c.name}  ·  ${Math.max(1, Math.round(c.size / 1024))} kB`);
+        Object.assign(b.style, { textAlign: 'left', width: '100%', wordBreak: 'break-all' });
+        b.addEventListener('click', () => finish(c));
+        list.appendChild(b);
+      }
+      const cancelB = syncBtn('Cancel');
+      cancelB.addEventListener('click', () => finish(null));
+      panel.querySelector('[data-row="foot"]').appendChild(cancelB);
+      const mountTarget = document.fullscreenElement ?? videoEl?.parentElement ?? document.body;
+      if (mountTarget !== document.body && window.getComputedStyle(mountTarget).position === 'static') mountTarget.style.position = 'relative';
+      mountTarget.appendChild(panel);
+      panel.style.left = '50%'; panel.style.top = '12%'; panel.style.transform = 'translateX(-50%)';
+      setTimeout(() => document.addEventListener('keydown', onKey), 0);
+    });
+  }
+
+  // ── AnimeSub.info search panel (fork) ─────────────────────────────────────
+  // Every request is a click: search on Enter / "Szukaj", download on
+  // "Pobierz".  The SW queues requests (≥3 s apart) and caches searches for
+  // 24 h, so this panel never talks to AnimeSub on its own.
+  const AS_PANEL_ID     = 'cr-bsub-animesub-panel';
+  const AS_LAST_KEY     = 'crSubFix_asLast';      // { query, titleType }
+  // Per-episode memory (fork, stage 6).  Two small localStorage entries per
+  // CR episode guid, independent of the 30-day cue cache:
+  //   EP_SRC: which custom source was last chosen here (re-selected on return);
+  //   AS_PICK: the AnimeSub release chosen here — id, author, the query that
+  //            found it, and a manual (linear) sync — kept a year so it can be
+  //            re-downloaded and re-timed after the cue cache expired.
+  const EP_SRC_PREFIX  = 'crSubFix_epSource_';
+  const AS_PICK_PREFIX = 'crSubFix_asPick_';
+  const EP_MEMORY_TTL  = 365 * 24 * 3600 * 1000;
+  function rememberEpSource(ep, id) {
+    if (!ep) return;
+    if (id && isCustomId(id)) STORAGE.lsSet(EP_SRC_PREFIX + ep.guid, { id }, EP_MEMORY_TTL);
+    else STORAGE.lsDel(EP_SRC_PREFIX + ep.guid);
+  }
+  function getAsPick(ep) { return ep ? STORAGE.lsGet(AS_PICK_PREFIX + ep.guid) : null; }
+  function saveAsPick(ep, pick) { if (ep) STORAGE.lsSet(AS_PICK_PREFIX + ep.guid, { ...pick, at: Date.now() }, EP_MEMORY_TTL); }
+  // Called after every sync change: a manual linear sync is what the user
+  // tuned by hand, so it travels with the pick; anchors are re-derived anyway.
+  const MEGA_PICK_PREFIX = 'crSubFix_megaPick_';
+  function getMegaPick(ep) { return ep ? STORAGE.lsGet(MEGA_PICK_PREFIX + ep.guid) : null; }
+  function saveMegaPick(ep, pick) { if (ep) STORAGE.lsSet(MEGA_PICK_PREFIX + ep.guid, { ...pick, at: Date.now() }, EP_MEMORY_TTL); }
+  function rememberCustomSync(ep, id) {
+    if (!ep) return;
+    const [get, save] = id === CUSTOM.ANIMESUB_ID ? [getAsPick, saveAsPick] : id === CUSTOM.MEGA_ID ? [getMegaPick, saveMegaPick] : [];
+    const pick = get && get(ep);
+    if (!pick) return;
+    const sync = ep.getCustomSource(id)?.sync;
+    save(ep, { ...pick, sync: sync?.mode === 'linear' ? sync : null });
+  }
+
+  const AS_TITLE_TYPES  = [['org', 'Tytuł oryginalny'], ['en', 'Tytuł angielski'], ['pl', 'Tytuł polski']];
+
+  function asErrorText(code) {
+    if (code === 'timeout')        return 'AnimeSub nie odpowiada — spróbuj za chwilę.';
+    if (code === 'security-error') return 'AnimeSub odrzucił pobieranie (błąd zabezpieczeń) — spróbuj ponownie.';
+    if (code === 'not-in-results') return 'Tego wyniku nie ma już na liście — wyszukaj ponownie.';
+    if (code === 'not-a-zip')      return 'AnimeSub zwrócił coś innego niż archiwum.';
+    if (/^AnimeSub HTTP/.test(code || '')) return code;
+    return 'Nie udało się połączyć z AnimeSub.';
+  }
+
+  // Default query for this episode: CR metadata (en-US series title, season,
+  // in-season episode number) → AniList romaji for that season → "Romaji epNN".
+  // CR's own cms/objects endpoint is called once, with the auth header the
+  // player already sent; the DOM (og:title + series link) is the fallback.
+  // Memoized per episode guid.  Resolves to { query, note } or null.
+  const _asSuggest = new Map();
+  let _latestAuth = null;   // set by the fetch wrapper
+  function suggestAnimesubQuery(ep) {
+    if (_asSuggest.has(ep.guid)) return _asSuggest.get(ep.guid);
+    const p = (async () => {
+      let meta = null;
+      const auth = _latestAuth || ep.capturedAuth;
+      if (auth) {
+        try {
+          const r = await originalFetch(`/content/v2/cms/objects/${encodeURIComponent(ep.guid)}?locale=en-US`,
+            { headers: { ...auth, Accept: 'application/json' } });
+          if (r.ok) meta = TITLE_MAP.metaFromCms(await r.json());
+        } catch (e) { log.warn('CR metadata fetch failed:', e && e.message); }
+      }
+      if (!meta) meta = TITLE_MAP.metaFromDom(document);
+      if (!meta) return null;
+      const english = meta.source === 'cms' ? meta.seriesTitle : TITLE_MAP.slugToTitle(meta.seriesSlug);
+      const ep_n = TITLE_MAP.episodeForQuery(meta);
+      const t = await rpc('animesubTitle', { search: english, seasonNumber: meta.seasonNumber, airDate: meta.airDate }, 20000);
+      log.info(`AnimeSub title: CR "${english}" S${meta.seasonNumber ?? '?'} ep${ep_n ?? '?'} (${meta.source}) → ${t.ok ? `AniList "${t.romaji}"` : `no AniList match (${t.error})`}.`);
+      const entry = t.ok ? { romaji: t.romaji, startDate: t.startDate } : { romaji: english, startDate: null };
+      const first = t.ok ? { romaji: t.firstRomaji, startDate: t.firstStartDate } : null;
+      const candidates = TITLE_MAP.candidateQueries({ entry, first, meta });
+      if (!candidates.length) return null;
+      const absNote = meta.episodeAbs && meta.episodeInSeason && meta.episodeAbs !== meta.episodeInSeason
+        ? ` (CR: E${meta.episodeAbs} = ep${meta.episodeInSeason} w sezonie)` : '';
+      return {
+        candidates, meta, degraded: !t.ok,
+        titles: [entry.romaji, first?.romaji].filter(Boolean),
+        note: (t.ok ? `Tytuł z AniList: ${t.romaji}` : `Brak dopasowania w AniList — użyto tytułu z Crunchyroll`) + absNote,
+      };
+    })().catch((e) => { log.warn('AnimeSub suggestion failed:', e && e.message); return null; });
+    _asSuggest.set(ep.guid, p);
+    // Keep only a full answer: a null (CR metadata not ready yet) or an
+    // AniList miss/timeout is retried the next time a panel opens.
+    p.then((r) => { if ((!r || r.degraded) && _asSuggest.get(ep.guid) === p) _asSuggest.delete(ep.guid); });
+    return p;
+  }
+
+  function openAnimesubPanel() {
+    if (!currentEp()) return;
+    const existing = document.getElementById(AS_PANEL_ID);
+    if (existing) { existing.querySelector('input')?.focus(); return; }
+    let last = {};
+    try { last = JSON.parse(localStorage.getItem(AS_LAST_KEY) || '{}') || {}; } catch (_) {}
+    const guid = currentEp().guid;
+    // The last query is reused only on the same episode; elsewhere the
+    // suggestion (CR metadata + AniList) fills the box once it resolves.
+    const sameEp = last.guid === guid && last.query;
+    const pick = getAsPick(currentEp());
+    const state = {
+      query: sameEp ? last.query : (pick?.query || ''),
+      titleType: (sameEp ? last.titleType : pick?.titleType) || last.titleType || 'org',
+      page: (!sameEp && pick?.page) || 0, busy: false,
+    };
+
+    const panel = document.createElement('div');
+    panel.id = AS_PANEL_ID;
+    Object.assign(panel.style, panelStyle({
+      position: 'absolute', zIndex: '2147483646', padding: '12px 14px', width: '480px',
+      maxWidth: '92%', maxHeight: '78%', display: 'flex', flexDirection: 'column', gap: '8px',
+    }));
+    panel.innerHTML =
+      `<div style="display:flex;justify-content:space-between;align-items:center;">` +
+        `<div style="font-size:13px;font-weight:700;color:${THEME.accent};">🔎 Szukaj na AnimeSub.info</div>` +
+        `<div data-row="close"></div></div>` +
+      `<div style="display:flex;gap:6px;">` +
+        `<input data-f="q" type="text" spellcheck="false" placeholder="np. Sousou no Frieren 2nd Season ep01" ` +
+          `style="flex:1;min-width:0;background:#111;color:${THEME.text};border:1px solid ${THEME.panelEdge};border-radius:5px;padding:5px 8px;font:12px ${THEME.font};">` +
+        `<select data-f="t" style="background:#1a1a2e;color:${THEME.text};border:1px solid ${THEME.panelEdge};border-radius:5px;font:12px ${THEME.font};"></select>` +
+        `<span data-row="go"></span></div>` +
+      `<div data-row="pick"></div>` +
+      `<div data-row="status" style="font-size:11px;color:#999;min-height:14px;"></div>` +
+      `<div data-row="list" style="overflow-y:auto;display:flex;flex-direction:column;gap:6px;scrollbar-width:thin;"></div>` +
+      `<div data-row="pager" style="display:flex;justify-content:space-between;"></div>`;
+
+    const $ = (sel) => panel.querySelector(sel);
+    const input = $('[data-f="q"]'), select = $('[data-f="t"]');
+    const status = $('[data-row="status"]'), list = $('[data-row="list"]'), pager = $('[data-row="pager"]');
+    input.value = state.query;
+    for (const [v, label] of AS_TITLE_TYPES) {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = label; o.style.background = '#1a1a2e'; o.style.color = THEME.text;
+      if (v === state.titleType) o.selected = true;
+      select.appendChild(o);
+    }
+    // The CR player binds single-key shortcuts (space, f, m, arrows) on the
+    // document — keep typing inside the panel from pausing/seeking the video.
+    for (const ev of ['keydown', 'keyup', 'keypress']) {
+      panel.addEventListener(ev, (e) => {
+        if (ev === 'keydown' && e.key === 'Escape') { close(); return; }
+        if (ev === 'keydown' && e.key === 'Enter' && e.target === input) { state.matchTitle = null; search(0); }
+        e.stopPropagation();
+      });
+    }
+    // The release chosen on this episode before: shown on top, re-downloadable
+    // when its cues are no longer cached (30-day cue cache, or removed).
+    if (pick && pick.id) {
+      const box = $('[data-row="pick"]');
+      const loaded = currentEp().getCustomSource(CUSTOM.ANIMESUB_ID)?.origin?.id === pick.id;
+      const syncTxt = pick.sync?.mode === 'linear' ? ` · synchro ${pick.sync.offset >= 0 ? '+' : ''}${pick.sync.offset.toFixed(2)} s` : '';
+      box.style.cssText = `display:flex;gap:8px;align-items:center;font-size:11px;color:${THEME.text};border:1px solid ${THEME.accent};border-radius:6px;padding:5px 8px;`;
+      box.innerHTML = `<div style="flex:1;min-width:0;word-break:break-word;">✓ Wybrane na tym odcinku: <b>${escapeHtml(pick.author || '?')}</b> — ${escapeHtml(pick.title || pick.id)}${escapeHtml(syncTxt)}${loaded ? ' (wczytane)' : ''}</div>`;
+      if (!loaded) {
+        const again = syncBtn('Pobierz ponownie', true);
+        again.setAttribute('data-dl', '1');
+        again.addEventListener('click', () => {
+          state.query = pick.query || state.query; state.titleType = pick.titleType || state.titleType; state.page = pick.page || 0;
+          download({ id: pick.id, titleOrg: pick.title, author: pick.author });
+        });
+        box.appendChild(again);
+      }
+    }
+    const megaB = syncBtn('📁 Foldery MEGA');
+    megaB.title = 'Szukaj w publicznych folderach MEGA grup (FrixySubs, FujiSubs…)';
+    megaB.addEventListener('click', () => { close(); openMegaPanel(); });
+    const closeB = syncBtn('✕');
+    closeB.addEventListener('click', () => close());
+    $('[data-row="close"]').style.cssText = 'display:flex;gap:6px;';
+    $('[data-row="close"]').append(megaB, closeB);
+    const goB = syncBtn('Szukaj', true);
+    goB.addEventListener('click', () => { state.matchTitle = null; search(0); });
+    $('[data-row="go"]').appendChild(goB);
+
+    function close() { try { panel.remove(); } catch (_) {} }
+    function setBusy(b, text) {
+      state.busy = b;
+      goB.disabled = b; goB.style.opacity = b ? '0.5' : '1';
+      for (const btn of panel.querySelectorAll('[data-dl]')) btn.disabled = b;
+      status.textContent = text || '';
+    }
+
+    async function search(page) {
+      if (state.busy) return;
+      const query = input.value.trim();
+      if (!query) { status.textContent = 'Wpisz tytuł, np. „Sousou no Frieren ep01”.'; input.focus(); return; }
+      state.query = query; state.titleType = select.value; state.page = page;
+      try { localStorage.setItem(AS_LAST_KEY, JSON.stringify({ query, titleType: state.titleType, guid })); } catch (_) {}
+      setBusy(true, 'Szukam…');
+      const res = await rpc('animesubSearch', { query, titleType: state.titleType, page }, 45000);
+      setBusy(false);
+      if (!res.ok) { status.textContent = asErrorText(res.error); return res; }
+      render(res);
+      return res;
+    }
+
+    function render(res) {
+      list.innerHTML = ''; pager.innerHTML = '';
+      const n = res.results.length;
+      status.textContent = n
+        ? `Strona ${state.page + 1}: ${n} ${plPlural(n, 'wynik', 'wyniki', 'wyników')}${res.cached ? ' (z pamięci podręcznej)' : ''}.`
+        : 'Brak wyników. Spróbuj bez numeru odcinka albo innego typu tytułu.';
+      // Auto-suggested searches: results that really are this title/season go
+      // first (AnimeSub's search is loose and mixes in other seasons).
+      const mt = state.matchTitle;
+      const rows = mt ? [...res.results].sort((a, b) => TITLE_MAP.resultsMatch([b], mt) - TITLE_MAP.resultsMatch([a], mt)) : res.results;
+      for (const r of rows) list.appendChild(resultRow(r));
+      if (state.page > 0) {
+        const prev = syncBtn('‹ Poprzednia');
+        prev.addEventListener('click', () => search(state.page - 1));
+        pager.appendChild(prev);
+      } else pager.appendChild(document.createElement('span'));
+      if (res.hasNext) {
+        const next = syncBtn('Następna ›');
+        next.addEventListener('click', () => search(state.page + 1));
+        pager.appendChild(next);
+      }
+      list.scrollTop = 0;
+    }
+
+    function resultRow(r) {
+      const row = document.createElement('div');
+      Object.assign(row.style, {
+        border: `1px solid ${THEME.panelEdge}`, borderRadius: '6px', padding: '7px 9px',
+        display: 'flex', gap: '8px', alignItems: 'flex-start',
+      });
+      const who  = r.author || r.uploader || '?';
+      const meta = [who, r.format, r.date, r.size, r.downloads != null ? `⬇ ${r.downloads}` : '']
+        .filter(Boolean).map(escapeHtml).join(' · ');
+      const alt  = [r.titleEn, r.titleAlt].filter(Boolean).map(escapeHtml).join(' / ');
+      const desc = String(r.description || '');
+      const info = document.createElement('div');
+      info.style.cssText = 'flex:1;min-width:0;font-size:12px;line-height:1.4;';
+      info.innerHTML =
+        `<div style="font-weight:700;color:${THEME.text};word-break:break-word;">${escapeHtml(r.titleOrg || '')}</div>` +
+        (alt ? `<div style="color:#999;font-size:11px;word-break:break-word;">${alt}</div>` : '') +
+        `<div style="color:${THEME.accent};font-size:11px;margin-top:2px;">${meta}</div>` +
+        (desc ? `<div data-f="desc" title="Kliknij, aby rozwinąć" style="color:#bbb;font-size:11px;margin-top:3px;white-space:pre-wrap;word-break:break-word;max-height:4.2em;overflow:hidden;cursor:pointer;">${escapeHtml(desc)}</div>` : '');
+      const d = info.querySelector('[data-f="desc"]');
+      if (d) d.addEventListener('click', () => { d.style.maxHeight = d.style.maxHeight === 'none' ? '4.2em' : 'none'; });
+      const isPick = pick && pick.id === r.id;
+      if (isPick) row.style.borderColor = THEME.accent;
+      const dl = syncBtn(isPick ? 'Pobierz ✓' : 'Pobierz', true);
+      dl.setAttribute('data-dl', '1');
+      dl.addEventListener('click', () => download(r));
+      row.append(info, dl);
+      return row;
+    }
+
+    async function download(r) {
+      if (state.busy) return;
+      setBusy(true, `Pobieram ${r.titleOrg}… (AnimeSub wymaga świeżego wyszukiwania, ok. 5 s)`);
+      const res = await rpc('animesubDownload', { id: r.id, query: state.query, titleType: state.titleType, page: state.page }, 60000);
+      setBusy(false);
+      if (!res.ok) { status.textContent = asErrorText(res.error); return; }
+      let bytes;
+      try {
+        const bin = atob(res.base64);
+        bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      } catch (_) { status.textContent = 'Uszkodzone dane z AnimeSub.'; return; }
+      log.info(`AnimeSub download [${r.id}] ${res.filename} — ${res.size} bytes.`);
+      close();
+      const ep = currentEp();
+      const prev = getAsPick(ep);
+      const keepSync = prev && prev.id === r.id ? prev.sync : null;   // same release → same timing
+      const origin = { site: 'animesub', id: r.id, author: r.author || r.uploader || '', title: r.titleOrg || '' };
+      await ingestSubtitleBytes(bytes, res.filename, { id: CUSTOM.ANIMESUB_ID, origin, sync: keepSync });
+      if (currentEp() === ep && ep.getCustomSource(CUSTOM.ANIMESUB_ID)?.origin?.id === r.id) {
+        saveAsPick(ep, { ...origin, query: state.query, titleType: state.titleType, page: state.page, sync: keepSync || null });
+      }
+    }
+
+    const mountTarget = document.fullscreenElement ?? videoEl?.parentElement ?? document.body;
+    if (mountTarget !== document.body && window.getComputedStyle(mountTarget).position === 'static') mountTarget.style.position = 'relative';
+    mountTarget.appendChild(panel);
+    panel.style.left = '50%'; panel.style.top = '6%'; panel.style.transform = 'translateX(-50%)';
+    setTimeout(() => { input.focus(); input.select(); }, 0);
+    if (state.query) { search(0); return; }   // cached in the SW for 24 h — no extra AnimeSub hit on re-open
+    status.textContent = 'Ustalam tytuł odcinka…';
+    suggestAnimesubQuery(currentEp()).then((sug) => {
+      if (!panel.isConnected || state.busy) return;
+      if (input.value.trim()) { status.textContent = ''; return; }   // the user already typed something
+      if (!sug) { status.textContent = 'Nie udało się ustalić tytułu — wpisz go ręcznie.'; return; }
+      tryCandidates(sug).catch((e) => log.warn('AnimeSub candidates failed:', e && e.message));
+    });
+
+    // Up to 3 queries, in order, each one a normal queued + cached search;
+    // stop at the first whose results are really this title.
+    async function tryCandidates(sug) {
+      const n = sug.candidates.length;
+      for (let i = 0; i < n; i++) {
+        const c = sug.candidates[i];
+        if (!panel.isConnected) return;
+        if (i > 0 && input.value.trim() !== sug.candidates[i - 1].query) return;   // the user edited the box
+        input.value = c.query;
+        state.matchTitle = c.title;
+        const res = await search(0);
+        if (!res || !res.ok) return;
+        if (TITLE_MAP.resultsMatch(res.results, c.title)) {
+          status.textContent += ` ${sug.note}.` + (i ? ` (próba ${i + 1}/${n})` : '');
+          return;
+        }
+        if (i + 1 < n) status.textContent = `Brak „${c.query}” — próbuję „${sug.candidates[i + 1].query}”…`;
+      }
+      status.textContent = `Nic nie pasuje do ${sug.candidates.map((c) => `„${c.query}”`).join(', ')}. ${sug.note}. Popraw frazę ręcznie.`;
+      list.innerHTML = '';
+    }
+  }
+
+  // ── Group MEGA folders panel (fork, stage 8) ──────────────────────────────
+  // Searches the public "all subtitles" MEGA folders of Polish fansub groups
+  // by file name.  The SW lists each folder once per 12 h (one API call),
+  // searches locally and downloads + decrypts only the clicked file.
+  const MEGA_PANEL_ID = 'cr-bsub-mega-panel';
+  // Polish count noun: 1 plik, 2–4 / 22–24 pliki, 5–21 / 25+ plików.
+  function plPlural(n, one, few, many) {
+    if (n === 1) return one;
+    return n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? few : many;
+  }
+  function megaErrorText(code) {
+    if (code === 'timeout') return 'MEGA nie odpowiada — spróbuj za chwilę.';
+    if (code === 'bad-link') return 'To nie jest link do folderu MEGA (https://mega.nz/folder/…#…).';
+    if (code === 'exists') return 'Ten folder już jest na liście.';
+    if (/wrong-key/.test(code || '')) return 'Klucz w linku nie pasuje do folderu (sprawdź część po #).';
+    if (code === 'not-in-index') return 'Pliku nie ma już w folderze — wyszukaj ponownie.';
+    if (code === 'too-large') return 'Plik jest za duży jak na napisy.';
+    if (/^MEGA error -9/.test(code || '')) return 'Folder lub plik nie istnieje (usunięty albo zmieniony link).';
+    return 'Błąd MEGA: ' + (code || 'nieznany');
+  }
+  const parseEpisodes = (s) => [...new Set(String(s || '').split(/[^0-9]+/).filter(Boolean).map(Number).filter((n) => n > 0 && n < 10000))];
+
+  function openMegaPanel() {
+    if (!currentEp()) return;
+    const existing = document.getElementById(MEGA_PANEL_ID);
+    if (existing) { existing.querySelector('input')?.focus(); return; }
+    const ep0 = currentEp();
+    const pick = getMegaPick(ep0);
+    const state = { busy: false, auto: null };
+
+    const panel = document.createElement('div');
+    panel.id = MEGA_PANEL_ID;
+    Object.assign(panel.style, panelStyle({
+      position: 'absolute', zIndex: '2147483646', padding: '12px 14px', width: '500px',
+      maxWidth: '92%', maxHeight: '78%', display: 'flex', flexDirection: 'column', gap: '8px',
+    }));
+    const inputCss = `background:#111;color:${THEME.text};border:1px solid ${THEME.panelEdge};border-radius:5px;padding:5px 8px;font:12px ${THEME.font};`;
+    panel.innerHTML =
+      `<div style="display:flex;justify-content:space-between;align-items:center;">` +
+        `<div style="font-size:13px;font-weight:700;color:${THEME.accent};">📁 Foldery MEGA grup</div>` +
+        `<div data-row="head" style="display:flex;gap:6px;"></div></div>` +
+      `<div style="display:flex;gap:6px;">` +
+        `<input data-f="q" type="text" spellcheck="false" placeholder="tytuł, np. Kusuriya no Hitorigoto 3rd Season" style="flex:1;min-width:0;${inputCss}">` +
+        `<input data-f="e" type="text" spellcheck="false" placeholder="odc. 5, 53" title="Numery odcinka (w sezonie i absolutny), oddzielone przecinkiem; puste = wszystkie" style="width:72px;${inputCss}">` +
+        `<span data-row="go"></span></div>` +
+      `<div data-row="pick"></div>` +
+      `<div data-row="status" style="font-size:11px;color:#999;min-height:14px;"></div>` +
+      `<div data-row="list" style="overflow-y:auto;display:flex;flex-direction:column;gap:6px;scrollbar-width:thin;"></div>` +
+      `<div data-row="folders" style="font-size:11px;color:#999;display:flex;flex-wrap:wrap;gap:6px;align-items:center;border-top:1px solid ${THEME.panelEdge};padding-top:6px;"></div>`;
+    const $ = (sel) => panel.querySelector(sel);
+    const input = $('[data-f="q"]'), epsIn = $('[data-f="e"]');
+    const status = $('[data-row="status"]'), list = $('[data-row="list"]');
+    if (pick) { input.value = pick.query || ''; epsIn.value = (pick.episodes || []).join(', '); }
+
+    for (const ev of ['keydown', 'keyup', 'keypress']) {
+      panel.addEventListener(ev, (e) => {
+        if (ev === 'keydown' && e.key === 'Escape') { close(); return; }
+        if (ev === 'keydown' && e.key === 'Enter' && (e.target === input || e.target === epsIn)) { state.auto = null; search(); }
+        e.stopPropagation();
+      });
+    }
+    const asB = syncBtn('🔎 AnimeSub');
+    asB.addEventListener('click', () => { close(); openAnimesubPanel(); });
+    const closeB = syncBtn('✕');
+    closeB.addEventListener('click', () => close());
+    $('[data-row="head"]').append(asB, closeB);
+    const goB = syncBtn('Szukaj', true);
+    goB.addEventListener('click', () => { state.auto = null; search(); });
+    $('[data-row="go"]').appendChild(goB);
+
+    if (pick && pick.h) {
+      const box = $('[data-row="pick"]');
+      const loaded = ep0.getCustomSource(CUSTOM.MEGA_ID)?.origin?.id === pick.h;
+      const syncTxt = pick.sync?.mode === 'linear' ? ` · synchro ${pick.sync.offset >= 0 ? '+' : ''}${pick.sync.offset.toFixed(2)} s` : '';
+      box.style.cssText = `display:flex;gap:8px;align-items:center;font-size:11px;color:${THEME.text};border:1px solid ${THEME.accent};border-radius:6px;padding:5px 8px;`;
+      box.innerHTML = `<div style="flex:1;min-width:0;word-break:break-word;">✓ Wybrane na tym odcinku: <b>${escapeHtml(pick.group || '?')}</b> — ${escapeHtml(pick.name || pick.h)}${escapeHtml(syncTxt)}${loaded ? ' (wczytane)' : ''}</div>`;
+      if (!loaded) {
+        const again = syncBtn('Pobierz ponownie', true);
+        again.setAttribute('data-dl', '1');
+        again.addEventListener('click', () => download({ h: pick.h, folder: pick.folder, name: pick.name, group: pick.group, dir: pick.dir }));
+        box.appendChild(again);
+      }
+    }
+
+    function close() { try { panel.remove(); } catch (_) {} }
+    function setBusy(b, text) {
+      state.busy = b;
+      goB.disabled = b; goB.style.opacity = b ? '0.5' : '1';
+      for (const btn of panel.querySelectorAll('[data-dl]')) btn.disabled = b;
+      if (text != null) status.textContent = text;
+    }
+
+    async function search(opts = {}) {
+      if (state.busy) return null;
+      const title = input.value.trim();
+      if (!title) { status.textContent = 'Wpisz tytuł (najlepiej romaji, jak na AniList).'; input.focus(); return null; }
+      const episodes = parseEpisodes(epsIn.value);
+      setBusy(true, 'Przeszukuję foldery… (pierwszy raz pobieram ich listę, kilka sekund)');
+      const res = await rpc('megaSearch', { title, episodes, refresh: !!opts.refresh }, 60000);
+      setBusy(false, '');
+      if (!res.ok) { status.textContent = megaErrorText(res.error); return res; }
+      render(res, { title, episodes });
+      return res;
+    }
+
+    function render(res, q) {
+      list.innerHTML = '';
+      const n = res.results.length;
+      const err = res.errors && res.errors.length ? ` Niedostępne: ${res.errors.join('; ')}.` : '';
+      status.textContent = (n
+        ? `${n}${res.truncated ? '+' : ''} ${plPlural(n, 'plik', 'pliki', 'plików')} w ${res.folders} ${res.folders === 1 ? 'folderze' : 'folderach'}.`
+        : `Brak plików dla „${q.title}”${q.episodes.length ? ` z odc. ${q.episodes.join('/')}` : ''}. Spróbuj bez numeru albo krótszego tytułu.`) + err;
+      for (const r of res.results) list.appendChild(resultRow(r));
+      list.scrollTop = 0;
+    }
+
+    function resultRow(r) {
+      const row = document.createElement('div');
+      Object.assign(row.style, {
+        border: `1px solid ${THEME.panelEdge}`, borderRadius: '6px', padding: '7px 9px',
+        display: 'flex', gap: '8px', alignItems: 'flex-start',
+      });
+      const info = document.createElement('div');
+      info.style.cssText = 'flex:1;min-width:0;font-size:12px;line-height:1.4;';
+      const kb = Math.max(1, Math.round((r.size || 0) / 1024));
+      info.innerHTML =
+        `<div style="font-weight:700;color:${THEME.text};word-break:break-word;">${escapeHtml(r.name)}</div>` +
+        `<div style="color:#999;font-size:11px;word-break:break-word;">${escapeHtml(r.dir)}</div>` +
+        `<div style="color:${THEME.accent};font-size:11px;margin-top:2px;">${escapeHtml(r.group)} · ${kb} kB</div>`;
+      const isPick = pick && pick.h === r.h;
+      if (isPick) row.style.borderColor = THEME.accent;
+      const dl = syncBtn(isPick ? 'Pobierz ✓' : 'Pobierz', true);
+      dl.setAttribute('data-dl', '1');
+      dl.addEventListener('click', () => download(r));
+      row.append(info, dl);
+      return row;
+    }
+
+    async function download(r) {
+      if (state.busy) return;
+      setBusy(true, `Pobieram ${r.name}…`);
+      const res = await rpc('megaDownload', { folder: r.folder, h: r.h }, 60000);
+      setBusy(false, '');
+      if (!res.ok) { status.textContent = megaErrorText(res.error); return; }
+      let bytes;
+      try {
+        const bin = atob(res.base64);
+        bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      } catch (_) { status.textContent = 'Uszkodzone dane z MEGA.'; return; }
+      log.info(`MEGA download [${r.group}] ${res.dir}/${res.filename} — ${res.size} bytes.`);
+      close();
+      const ep = currentEp();
+      const prev = getMegaPick(ep);
+      const keepSync = prev && prev.h === r.h ? prev.sync : null;
+      const origin = { site: 'mega', id: r.h, folder: r.folder, author: r.group, dir: r.dir, title: r.name };
+      await ingestSubtitleBytes(bytes, res.filename, { id: CUSTOM.MEGA_ID, origin, sync: keepSync });
+      if (currentEp() === ep && ep.getCustomSource(CUSTOM.MEGA_ID)?.origin?.id === r.h) {
+        saveMegaPick(ep, {
+          h: r.h, folder: r.folder, name: r.name, group: r.group, dir: r.dir,
+          query: input.value.trim(), episodes: parseEpisodes(epsIn.value), sync: keepSync || null,
+        });
+      }
+    }
+
+    // Folder list footer: built-ins plus user-added links (removable).
+    function renderFolders(folders) {
+      const box = $('[data-row="folders"]');
+      box.innerHTML = '<span>Foldery:</span>';
+      for (const f of folders || []) {
+        const chip = document.createElement('span');
+        chip.style.cssText = `border:1px solid ${THEME.panelEdge};border-radius:10px;padding:1px 7px;color:${THEME.text};`;
+        chip.textContent = f.series ? `${f.group} (${f.series} ${plPlural(f.series, 'seria', 'serie', 'serii')})` : f.group;
+        if (f.series) chip.title = 'Foldery pojedynczych serii — przeszukiwane tylko, gdy tytuł pasuje';
+        if (!f.builtin) {
+          const x = document.createElement('span');
+          x.textContent = ' ✕'; x.style.cursor = 'pointer'; x.title = 'Usuń folder z listy';
+          x.addEventListener('click', async () => { const r = await rpc('megaFolders', { op: 'remove', handle: f.handle }); if (r.ok) renderFolders(r.folders); });
+          chip.appendChild(x);
+        }
+        box.appendChild(chip);
+      }
+      const add = syncBtn('+ Dodaj link');
+      add.title = 'Dodaj publiczny folder MEGA innej grupy (link z kluczem po #)';
+      add.addEventListener('click', async () => {
+        const link = window.prompt('Link do publicznego folderu MEGA z napisami (https://mega.nz/folder/…#klucz):');
+        if (!link) return;
+        const group = window.prompt('Nazwa grupy (do wyświetlania):', '') || '';
+        setBusy(true, 'Sprawdzam folder…');
+        const r = await rpc('megaFolders', { op: 'add', link, group }, 60000);
+        setBusy(false, r.ok ? `Dodano folder: ${r.files} plików z napisami.` : megaErrorText(r.error));
+        if (r.ok) renderFolders(r.folders);
+      });
+      const refresh = syncBtn('↻');
+      refresh.title = 'Odśwież listy plików (normalnie co 12 h)';
+      refresh.addEventListener('click', () => search({ refresh: true }));
+      box.append(add, refresh);
+    }
+    rpc('megaFolders', { op: 'list' }).then((r) => { if (r.ok && panel.isConnected) renderFolders(r.folders); });
+
+    const mountTarget = document.fullscreenElement ?? videoEl?.parentElement ?? document.body;
+    if (mountTarget !== document.body && window.getComputedStyle(mountTarget).position === 'static') mountTarget.style.position = 'relative';
+    mountTarget.appendChild(panel);
+    panel.style.left = '50%'; panel.style.top = '6%'; panel.style.transform = 'translateX(-50%)';
+    setTimeout(() => { input.focus(); input.select(); }, 0);
+    if (input.value.trim()) { search(); return; }
+    // Same suggestion as AnimeSub (CR metadata → AniList romaji): try the
+    // season's title with both episode numbers, then the first season's title.
+    status.textContent = 'Ustalam tytuł odcinka…';
+    suggestAnimesubQuery(ep0).then(async (sug) => {
+      if (!panel.isConnected || state.busy || input.value.trim()) { if (!input.value.trim()) status.textContent = ''; return; }
+      if (!sug) { status.textContent = 'Nie udało się ustalić tytułu — wpisz go ręcznie.'; return; }
+      const m = sug.meta || {};
+      const eps = [m.episodeInSeason, m.episodeAbs].filter((n) => n != null);
+      const tries = [...new Set(sug.titles.map((t) => TITLE_MAP.queryTitle(t)))];
+      for (let i = 0; i < tries.length; i++) {
+        if (!panel.isConnected) return;
+        if (i > 0 && input.value.trim() !== tries[i - 1]) return;   // the user edited the box
+        input.value = tries[i];
+        epsIn.value = (i === 0 ? eps : [...eps].reverse()).join(', ');
+        const res = await search();
+        if (!res || !res.ok || res.results.length) { if (res && res.ok) status.textContent += ` ${sug.note}.`; return; }
+      }
+    }).catch((e) => log.warn('MEGA suggestion failed:', e && e.message));
+  }
+
+  // parseName drives format detection (legacy formats arrive as ".srt");
+  // labelName is what the user recognises in the menu.
+  // opts.id / opts.origin: AnimeSub downloads go to their own 'custom:animesub'
+  // slot (see custom-source.js); everything else uses 'custom:local'.
+  function ingestSubtitleText(parseName, text, labelName, opts) {
     const ep = currentEp();
     if (!ep) return;
-    let text;
-    try { text = await file.text(); }
-    catch (err) { showErrorToast('Could not read that subtitle file.'); return; }
-    const record = CUSTOM.makeLocalSource(file.name, text);
+    const record = CUSTOM.makeLocalSource(parseName, text, opts);
     if (!record) {
-      log.warn(`Uploaded file [${file.name}] parsed to 0 cues.`);
+      log.warn(`Uploaded file [${labelName}] parsed to 0 cues.`);
       showErrorToast('No subtitles found in that file.');
       return;
     }
-    log.info(`Loaded local subtitle file [${file.name}] — ${record.srcCues.length} cues.`);
+    if (labelName) record.label = String(labelName).replace(/\.[^.]+$/, '').slice(0, 40) || record.label;
+    // A re-downloaded AnimeSub pick gets back the sync tuned for this episode
+    // (a non-'none' sync also stops auto-sync from overriding it).
+    if (opts && opts.sync && opts.sync.mode === 'linear') record.sync = opts.sync;
+    log.info(`Loaded local subtitle file [${labelName}] — ${record.srcCues.length} cues.`);
     // A new file invalidates any half-done translation of the previous one.
-    clearMtPartials(ep.guid, CUSTOM_LOCAL_ID);
+    clearMtPartials(ep.guid, record.id);
     ep.addCustomSource(record);
     sourceMenu.updateButtonVisibility();
-    // force=true: re-uploading replaces the same 'custom:local' slot, so the id
-    // may be unchanged while the cues changed — bypass selectSource's same-id
+    // force=true: re-uploading replaces the same slot, so the id may be
+    // unchanged while the cues changed — bypass selectSource's same-id
     // short-circuit to apply the new file's cues live.
-    selectSource(CUSTOM_LOCAL_ID, true);
+    selectSource(record.id, true);
   }
+
+  // Drag-and-drop: drop a subtitle file or ZIP (e.g. saved from Discord) onto a
+  // watch page.  Only claims drags that carry files and only while an Episode
+  // exists, so ordinary page drags are untouched.  Capture phase, so the
+  // player's own handlers can't swallow the drop first.
+  function dragHasFiles(e) {
+    return !!(e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files'));
+  }
+  window.addEventListener('dragover', (e) => {
+    if (!currentEp() || !dragHasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  }, true);
+  window.addEventListener('drop', (e) => {
+    if (!currentEp() || !dragHasFiles(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const file = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file) ingestSubtitleFile(file).catch(err => {
+      log.error('Dropped subtitle file failed:', err);
+      showErrorToast('Could not read that subtitle file.');
+    });
+  }, true);
 
   function removeCustomSource(id) {
     const ep = currentEp();
@@ -785,6 +1440,7 @@
     if (!best) return;  // cross-language upload — manual sync only
 
     ep.setCustomSourceSync(record.id, { mode: 'anchors', anchors: best.anchors, bridge: best.lang });
+    rememberCustomSync(ep, record.id);
     if (ep.activeSource() === record.id && overlayActive) {
       ep.setOriginalCues(applyCustomSync(ep.getCustomSource(record.id)));
       renderer.invalidate();
@@ -922,6 +1578,7 @@
     }
     function applyLinear(scale, offset) {
       ep.setCustomSourceSync(record.id, { mode: 'linear', scale, offset });
+      rememberCustomSync(ep, record.id);
       reapply();
     }
     function recompute() {
@@ -940,6 +1597,7 @@
     }
     function reset() {
       ep.setCustomSourceSync(record.id, { mode: 'none' });
+      rememberCustomSync(ep, record.id);
       markA = markB = null;
       reapply();
       refresh();
@@ -1169,8 +1827,8 @@
   // same way the activation path does.
   async function fetchCuesForLocale(ep, locale) {
     // The user's uploaded file: its cues with their sync baked in, no fetch.
-    if (locale === CUSTOM_LOCAL_ID) {
-      const rec = ep.getCustomSource(CUSTOM_LOCAL_ID);
+    if (isCustomId(locale) && ep.getCustomSource(locale)?.kind === 'local') {
+      const rec = ep.getCustomSource(locale);
       const cues = rec ? applyCustomSync(rec) : [];
       return cues.length ? { cues, rawText: rec.signRawAss, url: null } : null;
     }
@@ -1275,7 +1933,7 @@
 
     const source = (opts && opts.source) || pickMtSourceLocale(ep, target);
     if (!source) { showErrorToast('No subtitle track available to translate from.'); return; }
-    const sLabel = source === CUSTOM_LOCAL_ID ? 'your file' : (LOCALE_LABELS[source] ?? source);
+    const sLabel = isCustomId(source) ? 'your file' : (LOCALE_LABELS[source] ?? source);
     const srcLang = isCustomId(source) ? '' : source;   // upload's language unknown → provider auto-detects
 
     const hud = UI.makeProgressHud(toastHost());
@@ -1472,7 +2130,9 @@
   // Valid CR official tracks for this episode usable as a translation source.
   function validSourceOptions(ep, target) {
     const opts = [['', 'Auto (best available)']];
-    if (ep.getCustomSource(CUSTOM_LOCAL_ID)) opts.push([CUSTOM_LOCAL_ID, 'Your uploaded file']);
+    for (const cs of ep.listCustomSources?.() ?? []) {
+      if (cs.kind === 'local') opts.push([cs.id, cs.id === CUSTOM_LOCAL_ID ? 'Your uploaded file' : (cs.label || cs.id)]);
+    }
     for (const v of ep.catalog.versions()) {
       const loc = v.locale;
       if (loc === target || localeHasContent(loc) === false) continue;
@@ -2363,7 +3023,12 @@
     // Restore the last-used subtitle locale, but only if it is actually available
     // for this episode.  A saved locale from a different episode (e.g. ca-ES that
     // only some shows carry) must not be applied here — fall back to default JP.
-    try {
+    // Fork: a custom source chosen on THIS episode (AnimeSub / file) comes back.
+    const epSrc = STORAGE.lsGet(EP_SRC_PREFIX + ep.guid)?.id;
+    if (epSrc && ep.getCustomSource(epSrc)) {
+      if (ep.activeSource() !== epSrc) { ep.setActiveSource(epSrc); ep.clearCues(); renderer.invalidate(); }
+      log.info(`Restoring this episode's subtitle choice [${epSrc}].`);
+    } else try {
       const saved = localStorage.getItem(LOCALE_PREF_KEY);
       if (saved && saved !== ep.activeSource()) {
         const avail = localeHasContent(saved);
@@ -2652,6 +3317,32 @@
     try { window.postMessage({ type: PROTOCOL.POST.SIGN_ASS, token: TOGGLE_TOKEN, ass }, window.location.origin); } catch (_) {}
   }
   function setSignSource(raw) { _signRawAss = raw || null; pushSignLayer(); }
+
+  // Fork: ask content.js to load the fansub group's fonts for a custom source
+  // from AnimeSub / MEGA (libass signs + CSS dialogue use the .ass Fontname).
+  // Names: Style Fontname + \fn of the signs part, plus the dialogue cues' fonts.
+  function requestGroupFonts(record) {
+    const o = record && record.origin;
+    if (!o || (o.site !== 'mega' && o.site !== 'animesub')) return;
+    const names = new Set();
+    const ass = record.signRawAss || '';
+    let fmtIdx = null;
+    for (const line of ass.split('\n')) {
+      if (/^Format\s*:/i.test(line) && /Fontname/i.test(line)) {
+        fmtIdx = line.slice(line.indexOf(':') + 1).split(',').map((x) => x.trim().toLowerCase()).indexOf('fontname');
+      } else if (fmtIdx != null && fmtIdx >= 0 && /^Style\s*:/i.test(line)) {
+        const v = line.slice(line.indexOf(':') + 1).split(',')[fmtIdx];
+        if (v && v.trim()) names.add(v.trim());
+      }
+    }
+    for (const m of ass.matchAll(/\\fn([^\\}]+)/g)) if (m[1].trim()) names.add(m[1].trim());
+    for (const c of record.srcCues || []) if (c && c.fontName) names.add(c.fontName);
+    if (!names.size) return;
+    const req = o.site === 'mega'
+      ? { folder: o.folder, dir: o.dir || '', title: '', names: [...names].slice(0, 100) }
+      : { title: o.title || '', names: [...names].slice(0, 100) };
+    try { window.postMessage({ type: PROTOCOL.POST.FONTS, token: TOGGLE_TOKEN, req }, window.location.origin); } catch (_) {}
+  }
   // Wrap overlayActive writes so the libass sign layer follows on/off (it shows
   // signs only while the overlay is active, and clears the moment it turns off).
   function setOverlayActive(v) { overlayActive = v; pushSignLayer(); if (v) maybeWarnHardsub(); }
@@ -3650,6 +4341,7 @@
       // MT and uploaded ('local') Sources both carry their own typeset signs in
       // record.signRawAss; null clears libass for sign-less (SRT/VTT) sources.
       setSignSource(record.signRawAss || null);
+      requestGroupFonts(record);
       ep.setActiveSubUrl(null);
       setOverlayActive(true);
       syncSubSuppression();
@@ -4349,6 +5041,10 @@
     // Snapshot the Episode at request start; writes after dispose() are no-ops.
     // If we're not on /watch/, no Episode exists and we just pass through.
     const ep = currentEp();
+
+    // Fork: the newest bearer token, for our one-off CR metadata lookup.  CR
+    // tokens expire after ~5 min, so the first captured one goes stale.
+    { const a = extractAuthHeader(args[1] ?? {}); if (a.Authorization) _latestAuth = a; }
 
     if (ep && !ep.capturedAuth) {
       const auth = extractAuthHeader(args[1] ?? {});

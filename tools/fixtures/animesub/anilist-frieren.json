@@ -1,0 +1,110 @@
+[
+ {
+  "id": 170068,
+  "format": "ONA",
+  "title": {
+   "romaji": "Sousou no Frieren: ●● no Mahou",
+   "english": null
+  },
+  "startDate": {
+   "year": 2023,
+   "month": 10,
+   "day": 11
+  },
+  "endDate": {
+   "year": 2024,
+   "month": 3,
+   "day": 24
+  }
+ },
+ {
+  "id": 189513,
+  "format": "ONA",
+  "title": {
+   "romaji": "Sousou no Frieren: ●● no Mahou Part 2",
+   "english": null
+  },
+  "startDate": {
+   "year": 2025,
+   "month": 4,
+   "day": 2
+  },
+  "endDate": {
+   "year": 2025,
+   "month": 9,
+   "day": 3
+  }
+ },
+ {
+  "id": 154587,
+  "format": "TV",
+  "title": {
+   "romaji": "Sousou no Frieren",
+   "english": "Frieren: Beyond Journey’s End"
+  },
+  "startDate": {
+   "year": 2023,
+   "month": 9,
+   "day": 29
+  },
+  "endDate": {
+   "year": 2024,
+   "month": 3,
+   "day": 22
+  }
+ },
+ {
+  "id": 182255,
+  "format": "TV",
+  "title": {
+   "romaji": "Sousou no Frieren 2nd Season",
+   "english": "Frieren: Beyond Journey’s End Season 2"
+  },
+  "startDate": {
+   "year": 2026,
+   "month": 1,
+   "day": 16
+  },
+  "endDate": {
+   "year": 2026,
+   "month": 3,
+   "day": 27
+  }
+ },
+ {
+  "id": 206425,
+  "format": "ONA",
+  "title": {
+   "romaji": "Sousou no Frieren: ●● no Mahou Part 3",
+   "english": null
+  },
+  "startDate": {
+   "year": 2026,
+   "month": 1,
+   "day": 19
+  },
+  "endDate": {
+   "year": 2026,
+   "month": 5,
+   "day": 22
+  }
+ },
+ {
+  "id": 209939,
+  "format": "TV",
+  "title": {
+   "romaji": "Sousou no Frieren 3rd Season",
+   "english": null
+  },
+  "startDate": {
+   "year": 2027,
+   "month": 10,
+   "day": null
+  },
+  "endDate": {
+   "year": null,
+   "month": null,
+   "day": null
+  }
+ }
+]

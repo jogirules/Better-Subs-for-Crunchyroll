@@ -1,0 +1,146 @@
+[
+ {
+  "id": 161645,
+  "format": "TV",
+  "title": {
+   "romaji": "Kusuriya no Hitorigoto",
+   "english": "The Apothecary Diaries"
+  },
+  "startDate": {
+   "year": 2023,
+   "month": 10,
+   "day": 22
+  },
+  "endDate": {
+   "year": 2024,
+   "month": 3,
+   "day": 24
+  }
+ },
+ {
+  "id": 200929,
+  "format": "MOVIE",
+  "title": {
+   "romaji": "Kusuriya no Hitorigoto: Bouhi no Hihou",
+   "english": "The Apothecary Diaries: The Late Lady’s Treasure"
+  },
+  "startDate": {
+   "year": 2026,
+   "month": 12,
+   "day": 11
+  },
+  "endDate": {
+   "year": 2026,
+   "month": 12,
+   "day": 11
+  }
+ },
+ {
+  "id": 176301,
+  "format": "TV",
+  "title": {
+   "romaji": "Kusuriya no Hitorigoto 2nd Season",
+   "english": "The Apothecary Diaries Season 2"
+  },
+  "startDate": {
+   "year": 2025,
+   "month": 1,
+   "day": 10
+  },
+  "endDate": {
+   "year": 2025,
+   "month": 7,
+   "day": 4
+  }
+ },
+ {
+  "id": 195516,
+  "format": "TV",
+  "title": {
+   "romaji": "Kusuriya no Hitorigoto 3rd Season",
+   "english": "The Apothecary Diaries Season 3"
+  },
+  "startDate": {
+   "year": 2026,
+   "month": 10,
+   "day": 2
+  },
+  "endDate": {
+   "year": null,
+   "month": null,
+   "day": null
+  }
+ },
+ {
+  "id": 170508,
+  "format": "ONA",
+  "title": {
+   "romaji": "Maomao no Hitorigoto",
+   "english": null
+  },
+  "startDate": {
+   "year": 2023,
+   "month": 10,
+   "day": 23
+  },
+  "endDate": {
+   "year": 2024,
+   "month": 3,
+   "day": 25
+  }
+ },
+ {
+  "id": 200927,
+  "format": "TV",
+  "title": {
+   "romaji": "Kusuriya no Hitorigoto 3rd Season Part 2",
+   "english": null
+  },
+  "startDate": {
+   "year": 2027,
+   "month": 4,
+   "day": null
+  },
+  "endDate": {
+   "year": null,
+   "month": null,
+   "day": null
+  }
+ },
+ {
+  "id": 186148,
+  "format": "ONA",
+  "title": {
+   "romaji": "Maomao no Hitorigoto 2nd Season",
+   "english": null
+  },
+  "startDate": {
+   "year": 2025,
+   "month": 1,
+   "day": 13
+  },
+  "endDate": {
+   "year": 2025,
+   "month": 7,
+   "day": 7
+  }
+ },
+ {
+  "id": 218532,
+  "format": "ONA",
+  "title": {
+   "romaji": "Maomao no Hitorigoto 3rd Season",
+   "english": null
+  },
+  "startDate": {
+   "year": 2026,
+   "month": 10,
+   "day": 5
+  },
+  "endDate": {
+   "year": null,
+   "month": null,
+   "day": null
+  }
+ }
+]
