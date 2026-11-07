@@ -15,7 +15,7 @@
 | 3 | RPC `animesubSearch`/`animesubDownload`, kolejka ≥ 3 s między żądaniami, cache wyników 24 h (bez `sh`) | ✅ (relay sprawdzony w Chromium: szukanie 153 ms, z cache 1 ms, ZIP 6 s) |
 | 4 | UI „Szukaj na AnimeSub”: fraza, typ tytułu, lista wyników, wybór pliku z archiwum; id `custom:animesub` | ✅ kod; panel do sprawdzenia na koncie (bez logowania brak odtwarzacza) |
 | 5 | Tytuł/odcinek ze strony CR + AniList (romaji, cache) | ✅ (CR cms/objects + AniList; panel do sprawdzenia na koncie) |
-| 6 | Pamięć per odcinek: metadane źródła w rekordzie (`site`, `id`, autor) | |
+| 6 | Pamięć per odcinek: metadane źródła w rekordzie (`site`, `id`, autor) | ✅ kod (wybór źródła per odcinek, pick AnimeSub 1 rok + synchro, „Pobierz ponownie”); do sprawdzenia na koncie |
 | 7 | Instrukcja testów (Kusuriya S3, Frieren) i strojenia synchronizacji | |
 | 8 | **Discord: „Szukaj w Discordzie” z odtwarzacza CR → karta Discorda z wpisanym wyszukiwaniem → „Wyślij do Better Subs” przy załączniku → napisy same trafiają do odcinka**; id `custom:discord` | nowy, po decyzji |
 

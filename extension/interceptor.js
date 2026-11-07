@@ -456,7 +456,7 @@
     },
     onLoadFile:      ()       => promptLoadFile(),
     onSearchAnimesub: ()      => openAnimesubPanel(),
-    onRemoveCustom:  (id)     => removeCustomSource(id),
+    onRemoveCustom:  (id)     => { if (STORAGE.lsGet(EP_SRC_PREFIX + currentEp()?.guid)?.id === id) rememberEpSource(currentEp(), null); removeCustomSource(id); },
     onAdjustSync:    (id)     => openSyncPanel(id),
     // Per-track timing nudge — available whenever subtitles are showing.
     onAdjustTiming:  ()       => openTimingPanel(),
@@ -653,6 +653,7 @@
       stopSync();
     }
     cur.setActiveSource(locale);
+    rememberEpSource(cur, locale);
     if (!isCustomId(locale)) {
       try { localStorage.setItem(LOCALE_PREF_KEY, locale); } catch (_) {}
     } else if (isEnabled() && !isHideOfficialSubs()) {
@@ -770,6 +771,32 @@
   // 24 h, so this panel never talks to AnimeSub on its own.
   const AS_PANEL_ID     = 'cr-bsub-animesub-panel';
   const AS_LAST_KEY     = 'crSubFix_asLast';      // { query, titleType }
+  // Per-episode memory (fork, stage 6).  Two small localStorage entries per
+  // CR episode guid, independent of the 30-day cue cache:
+  //   EP_SRC: which custom source was last chosen here (re-selected on return);
+  //   AS_PICK: the AnimeSub release chosen here — id, author, the query that
+  //            found it, and a manual (linear) sync — kept a year so it can be
+  //            re-downloaded and re-timed after the cue cache expired.
+  const EP_SRC_PREFIX  = 'crSubFix_epSource_';
+  const AS_PICK_PREFIX = 'crSubFix_asPick_';
+  const EP_MEMORY_TTL  = 365 * 24 * 3600 * 1000;
+  function rememberEpSource(ep, id) {
+    if (!ep) return;
+    if (id && isCustomId(id)) STORAGE.lsSet(EP_SRC_PREFIX + ep.guid, { id }, EP_MEMORY_TTL);
+    else STORAGE.lsDel(EP_SRC_PREFIX + ep.guid);
+  }
+  function getAsPick(ep) { return ep ? STORAGE.lsGet(AS_PICK_PREFIX + ep.guid) : null; }
+  function saveAsPick(ep, pick) { if (ep) STORAGE.lsSet(AS_PICK_PREFIX + ep.guid, { ...pick, at: Date.now() }, EP_MEMORY_TTL); }
+  // Called after every sync change: a manual linear sync is what the user
+  // tuned by hand, so it travels with the pick; anchors are re-derived anyway.
+  function rememberCustomSync(ep, id) {
+    if (!ep || id !== CUSTOM.ANIMESUB_ID) return;
+    const pick = getAsPick(ep);
+    if (!pick) return;
+    const sync = ep.getCustomSource(id)?.sync;
+    saveAsPick(ep, { ...pick, sync: sync?.mode === 'linear' ? sync : null });
+  }
+
   const AS_TITLE_TYPES  = [['org', 'Tytuł oryginalny'], ['en', 'Tytuł angielski'], ['pl', 'Tytuł polski']];
 
   function asErrorText(code) {
@@ -831,7 +858,12 @@
     // The last query is reused only on the same episode; elsewhere the
     // suggestion (CR metadata + AniList) fills the box once it resolves.
     const sameEp = last.guid === guid && last.query;
-    const state = { query: sameEp ? last.query : '', titleType: last.titleType || 'org', page: 0, busy: false };
+    const pick = getAsPick(currentEp());
+    const state = {
+      query: sameEp ? last.query : (pick?.query || ''),
+      titleType: (sameEp ? last.titleType : pick?.titleType) || last.titleType || 'org',
+      page: (!sameEp && pick?.page) || 0, busy: false,
+    };
 
     const panel = document.createElement('div');
     panel.id = AS_PANEL_ID;
@@ -848,6 +880,7 @@
           `style="flex:1;min-width:0;background:#111;color:${THEME.text};border:1px solid ${THEME.panelEdge};border-radius:5px;padding:5px 8px;font:12px ${THEME.font};">` +
         `<select data-f="t" style="background:#1a1a2e;color:${THEME.text};border:1px solid ${THEME.panelEdge};border-radius:5px;font:12px ${THEME.font};"></select>` +
         `<span data-row="go"></span></div>` +
+      `<div data-row="pick"></div>` +
       `<div data-row="status" style="font-size:11px;color:#999;min-height:14px;"></div>` +
       `<div data-row="list" style="overflow-y:auto;display:flex;flex-direction:column;gap:6px;scrollbar-width:thin;"></div>` +
       `<div data-row="pager" style="display:flex;justify-content:space-between;"></div>`;
@@ -870,6 +903,24 @@
         if (ev === 'keydown' && e.key === 'Enter' && e.target === input) { state.matchTitle = null; search(0); }
         e.stopPropagation();
       });
+    }
+    // The release chosen on this episode before: shown on top, re-downloadable
+    // when its cues are no longer cached (30-day cue cache, or removed).
+    if (pick && pick.id) {
+      const box = $('[data-row="pick"]');
+      const loaded = currentEp().getCustomSource(CUSTOM.ANIMESUB_ID)?.origin?.id === pick.id;
+      const syncTxt = pick.sync?.mode === 'linear' ? ` · synchro ${pick.sync.offset >= 0 ? '+' : ''}${pick.sync.offset.toFixed(2)} s` : '';
+      box.style.cssText = `display:flex;gap:8px;align-items:center;font-size:11px;color:${THEME.text};border:1px solid ${THEME.accent};border-radius:6px;padding:5px 8px;`;
+      box.innerHTML = `<div style="flex:1;min-width:0;word-break:break-word;">✓ Wybrane na tym odcinku: <b>${escapeHtml(pick.author || '?')}</b> — ${escapeHtml(pick.title || pick.id)}${escapeHtml(syncTxt)}${loaded ? ' (wczytane)' : ''}</div>`;
+      if (!loaded) {
+        const again = syncBtn('Pobierz ponownie', true);
+        again.setAttribute('data-dl', '1');
+        again.addEventListener('click', () => {
+          state.query = pick.query || state.query; state.titleType = pick.titleType || state.titleType; state.page = pick.page || 0;
+          download({ id: pick.id, titleOrg: pick.title, author: pick.author });
+        });
+        box.appendChild(again);
+      }
     }
     const closeB = syncBtn('✕');
     closeB.addEventListener('click', () => close());
@@ -944,7 +995,9 @@
         (desc ? `<div data-f="desc" title="Kliknij, aby rozwinąć" style="color:#bbb;font-size:11px;margin-top:3px;white-space:pre-wrap;word-break:break-word;max-height:4.2em;overflow:hidden;cursor:pointer;">${escapeHtml(desc)}</div>` : '');
       const d = info.querySelector('[data-f="desc"]');
       if (d) d.addEventListener('click', () => { d.style.maxHeight = d.style.maxHeight === 'none' ? '4.2em' : 'none'; });
-      const dl = syncBtn('Pobierz', true);
+      const isPick = pick && pick.id === r.id;
+      if (isPick) row.style.borderColor = THEME.accent;
+      const dl = syncBtn(isPick ? 'Pobierz ✓' : 'Pobierz', true);
       dl.setAttribute('data-dl', '1');
       dl.addEventListener('click', () => download(r));
       row.append(info, dl);
@@ -965,10 +1018,14 @@
       } catch (_) { status.textContent = 'Uszkodzone dane z AnimeSub.'; return; }
       log.info(`AnimeSub download [${r.id}] ${res.filename} — ${res.size} bytes.`);
       close();
-      await ingestSubtitleBytes(bytes, res.filename, {
-        id: CUSTOM.ANIMESUB_ID,
-        origin: { site: 'animesub', id: r.id, author: r.author || r.uploader || '', title: r.titleOrg || '' },
-      });
+      const ep = currentEp();
+      const prev = getAsPick(ep);
+      const keepSync = prev && prev.id === r.id ? prev.sync : null;   // same release → same timing
+      const origin = { site: 'animesub', id: r.id, author: r.author || r.uploader || '', title: r.titleOrg || '' };
+      await ingestSubtitleBytes(bytes, res.filename, { id: CUSTOM.ANIMESUB_ID, origin, sync: keepSync });
+      if (currentEp() === ep && ep.getCustomSource(CUSTOM.ANIMESUB_ID)?.origin?.id === r.id) {
+        saveAsPick(ep, { ...origin, query: state.query, titleType: state.titleType, page: state.page, sync: keepSync || null });
+      }
     }
 
     const mountTarget = document.fullscreenElement ?? videoEl?.parentElement ?? document.body;
@@ -1022,6 +1079,9 @@
       return;
     }
     if (labelName) record.label = String(labelName).replace(/\.[^.]+$/, '').slice(0, 40) || record.label;
+    // A re-downloaded AnimeSub pick gets back the sync tuned for this episode
+    // (a non-'none' sync also stops auto-sync from overriding it).
+    if (opts && opts.sync && opts.sync.mode === 'linear') record.sync = opts.sync;
     log.info(`Loaded local subtitle file [${labelName}] — ${record.srcCues.length} cues.`);
     // A new file invalidates any half-done translation of the previous one.
     clearMtPartials(ep.guid, record.id);
@@ -1135,6 +1195,7 @@
     if (!best) return;  // cross-language upload — manual sync only
 
     ep.setCustomSourceSync(record.id, { mode: 'anchors', anchors: best.anchors, bridge: best.lang });
+    rememberCustomSync(ep, record.id);
     if (ep.activeSource() === record.id && overlayActive) {
       ep.setOriginalCues(applyCustomSync(ep.getCustomSource(record.id)));
       renderer.invalidate();
@@ -1272,6 +1333,7 @@
     }
     function applyLinear(scale, offset) {
       ep.setCustomSourceSync(record.id, { mode: 'linear', scale, offset });
+      rememberCustomSync(ep, record.id);
       reapply();
     }
     function recompute() {
@@ -1290,6 +1352,7 @@
     }
     function reset() {
       ep.setCustomSourceSync(record.id, { mode: 'none' });
+      rememberCustomSync(ep, record.id);
       markA = markB = null;
       reapply();
       refresh();
@@ -2715,7 +2778,12 @@
     // Restore the last-used subtitle locale, but only if it is actually available
     // for this episode.  A saved locale from a different episode (e.g. ca-ES that
     // only some shows carry) must not be applied here — fall back to default JP.
-    try {
+    // Fork: a custom source chosen on THIS episode (AnimeSub / file) comes back.
+    const epSrc = STORAGE.lsGet(EP_SRC_PREFIX + ep.guid)?.id;
+    if (epSrc && ep.getCustomSource(epSrc)) {
+      if (ep.activeSource() !== epSrc) { ep.setActiveSource(epSrc); ep.clearCues(); renderer.invalidate(); }
+      log.info(`Restoring this episode's subtitle choice [${epSrc}].`);
+    } else try {
       const saved = localStorage.getItem(LOCALE_PREF_KEY);
       if (saved && saved !== ep.activeSource()) {
         const avail = localeHasContent(saved);
