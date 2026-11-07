@@ -316,7 +316,79 @@
     });
   }
 
+  // ── Group fonts ───────────────────────────────────────────────────────────
+  // Groups keep each series' fonts in a sub-folder ("Czcionki", "Fonty",
+  // "<Series> Fonty", "Czcionka") or loose in the series folder.
+  const FONT_EXT = /\.(ttf|otf|ttc)$/i;
+  const FONT_DIR = /czcion|font/i;
+  function buildFontIndex(nodes) {
+    const byH = new Map(nodes.map((n) => [n.h, n]));
+    const pathOf = (n) => {
+      const parts = [];
+      for (let x = byH.get(n.p), guard = 0; x && guard < 64; x = byH.get(x.p), guard++) parts.unshift(x.name);
+      return parts.join('/');
+    };
+    return nodes
+      .filter((n) => n.t === 0 && FONT_EXT.test(n.name) && n.s <= 40e6)
+      .map((n) => ({ h: n.h, dir: pathOf(n), name: n.name, size: n.s, k: b64Encode(n.k) }));
+  }
+  // The series folder a font belongs to: its dir minus trailing font folders.
+  function fontBase(dir) {
+    const parts = String(dir || '').split('/');
+    while (parts.length && FONT_DIR.test(parts[parts.length - 1])) parts.pop();
+    return parts.join('/');
+  }
+  // Fonts for a subtitle at `dir`: those whose series folder is the deepest
+  // ancestor (or equal) of `dir`.  A base holding more than `maxSubDirs`
+  // subtitle folders is a group-wide root, not a series — skipped.
+  function fontsForDir(fonts, subs, dir, maxSubDirs = 40) {
+    const under = (base) => !base || dir === base || dir.startsWith(base + '/');
+    let best = null;
+    for (const f of fonts) {
+      const b = fontBase(f.dir);
+      if (under(b) && (best === null || b.length > best.length)) best = b;
+    }
+    if (best === null) return [];
+    const subDirs = new Set((subs || []).filter((s) => !best || s.dir === best || s.dir.startsWith(best + '/')).map((s) => s.dir));
+    if (subDirs.size > maxSubDirs) return [];
+    return fonts.filter((f) => fontBase(f.dir) === best);
+  }
+  // Fonts for a title (subtitles from AnimeSub): series folders whose last
+  // path segment is this title; the same season first.
+  function fontBasesForTitle(fonts, title) {
+    const want = seasonOf(words(title));
+    const bases = new Map();
+    for (const f of fonts) {
+      const b = fontBase(f.dir);
+      if (!bases.has(b)) bases.set(b, []);
+      bases.get(b).push(f);
+    }
+    const out = [];
+    for (const [b, list] of bases) {
+      const seg = b.split('/').pop();
+      if (!seg || !seriesMatches([seg], title)) continue;
+      const s = seasonOf(words(seg));
+      out.push({ base: b, fonts: list, rank: (s ?? 1) === (want ?? 1) ? 0 : 1 });
+    }
+    return out.sort((a, b) => a.rank - b.rank);
+  }
+  // How likely a font file is one of `needed` (normalized names) by file name
+  // alone — orders downloads so the right files usually come first.
+  function fontFileHint(name, needed) {
+    const n = String(name).replace(FONT_EXT, '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    let best = 0;
+    for (const w of needed) {
+      const k = w.replace(/[^a-z0-9]+/g, '');
+      if (!k) continue;
+      if (n === k) return 3;
+      if (n.startsWith(k) || k.startsWith(n)) best = Math.max(best, 2);
+      else if (n.includes(k) || (n.length >= 4 && k.includes(n))) best = Math.max(best, 1);
+    }
+    return best;
+  }
+
   NS.CRSubFix.mega = {
+    buildFontIndex, fontBase, fontsForDir, fontBasesForTitle, fontFileHint,
     seriesMatches,
     API, DEFAULT_FOLDERS, parseFolderLink, b64urlDecode, b64Encode,
     decryptListing, buildIndex, search, episodeNumbers, fileAesKey, fileCtrIv,

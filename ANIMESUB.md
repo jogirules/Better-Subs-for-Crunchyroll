@@ -55,7 +55,14 @@ pobiera listę plików folderu (kilka sekund), potem przez 12 h szuka lokalnie (
 Pobierany jest tylko kliknięty plik; odszyfrowanie dzieje się w przeglądarce. **+ Dodaj link**
 dopisuje folder innej grupy (link `https://mega.nz/folder/…#klucz`; sprawdzany przed zapisem).
 Plakietka źródła: „MEGA”; wybór i synchro pamiętane per odcinek jak przy AnimeSub.
-Ograniczenie: czcionki grup (`Czcionki/`) nie są jeszcze wczytywane — libass użyje zastępczych.
+**Czcionki grup.** Po włączeniu napisów z MEGA albo AnimeSub rozszerzenie dociąga czcionki,
+których używa plik (Fontname stylów i `\fn`): z folderu czcionek tej serii u tej samej grupy
+(`Czcionki/`, `Fonty/`, `<Seria> Fonty`), a dla AnimeSub — z folderu serii o tym tytule w MEGA
+dowolnej grupy (najpierw ten sam sezon). Brakujące nazwy szuka jeszcze po nazwie pliku w całych
+folderach Shishy/FrixySubs/FujiSubs. Czcionki trafiają do libass (znaki) i do nakładki CSS
+(dialogi, gdy nie wymuszasz własnej czcionki). Pierwszy raz na serię: kilka–kilkanaście sekund
+(napisy działają od razu, czcionki podmieniają się po pobraniu); potem z pamięci podręcznej.
+Konsola strony: `[CR Sub Fix] group fonts: +N … not found: …`.
 
 Inne źródła: ▾ → Manage → **＋ Load subtitle file / ZIP…** albo przeciągnij plik
 (.ass/.srt/.txt/.sub/.zip) na stronę odcinka.

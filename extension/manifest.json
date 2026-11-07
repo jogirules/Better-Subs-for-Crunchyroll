@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
   "name": "Better Subs for Crunchyroll",
-  "version": "3.0.0.5",
+  "version": "3.0.0.6",
   "description": "Mix and match subtitle and audio languages on Crunchyroll, with a custom subtitle overlay and adjustable size, sync, and style.",
   "minimum_chrome_version": "111",
-  "permissions": ["storage", "activeTab"],
+  "permissions": ["storage", "unlimitedStorage", "activeTab"],
   "host_permissions": [
     "http://animesub.info/*", "https://graphql.anilist.co/*",
     "https://g.api.mega.co.nz/*", "https://*.userstorage.mega.co.nz/*"

@@ -11,7 +11,8 @@
  *    optional_host_permissions the popup requests when the user enables MT.
  */
 
-importScripts('lib/protocol.js', 'lib/animesub.js', 'lib/title-map.js', 'lib/vendor/aes.js', 'lib/mega.js');
+importScripts('lib/protocol.js', 'lib/animesub.js', 'lib/title-map.js', 'lib/vendor/aes.js', 'lib/mega.js', 'lib/font-names.js');
+const FONTN = self.CRSubFix.fontNames;
 const { MSG } = self.CRSubFix.protocol;
 const AS = self.CRSubFix.animesub;
 const TM = self.CRSubFix.titleMap;
@@ -188,16 +189,155 @@ function megaFolderList(folders) {
   return out;
 }
 
-async function megaIndex(folder, refresh) {
+// One listing call → subtitle files + font files (cached together, 12 h).
+async function megaListing(folder, refresh) {
   const key = MEGA_INDEX_PREFIX + folder.handle;
   if (!refresh) {
     const { [key]: hit } = await chrome.storage.local.get(key);
-    if (hit && Date.now() - hit.at < MEGA_INDEX_TTL_MS) return hit.files;
+    if (hit && hit.fonts && Date.now() - hit.at < MEGA_INDEX_TTL_MS) return hit;
   }
   const listing = await megaApi(folder.handle, { a: 'f', c: 1, ca: 1, r: 1 });
-  const files = MEGA.buildIndex(MEGA.decryptListing(listing, folder.keyB64));
-  await chrome.storage.local.set({ [key]: { at: Date.now(), files } });
-  return files;
+  const nodes = MEGA.decryptListing(listing, folder.keyB64);
+  const entry = { at: Date.now(), files: MEGA.buildIndex(nodes), fonts: MEGA.buildFontIndex(nodes) };
+  await chrome.storage.local.set({ [key]: entry });
+  return entry;
+}
+async function megaIndex(folder, refresh) {
+  return (await megaListing(folder, refresh)).files;
+}
+
+// Download + AES-CTR decrypt one indexed file.  `cache`: keep the plaintext in
+// Cache Storage (fonts — reused across episodes of a series).
+async function megaFileBytes(folder, file, cache) {
+  const url = 'https://mega-cache.invalid/' + file.h;
+  const store = cache ? await caches.open('crsub-mega-files') : null;
+  if (store) {
+    const hit = await store.match(url);
+    if (hit) return new Uint8Array(await hit.arrayBuffer());
+  }
+  const g = await megaApi(folder.handle, { a: 'g', g: 1, ssl: 1, n: file.h });
+  if (!g || !g.g) throw new Error('no-download-url');
+  const resp = await fetch(g.g, { signal: AbortSignal.timeout(60000) });
+  if (!resp.ok) throw new Error('MEGA HTTP ' + resp.status);
+  const enc = new Uint8Array(await resp.arrayBuffer());
+  const k32 = Uint8Array.from(atob(file.k), c => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey('raw', MEGA.fileAesKey(k32), 'AES-CTR', false, ['decrypt']);
+  const bytes = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-CTR', counter: MEGA.fileCtrIv(k32), length: 64 }, key, enc));
+  if (store) { try { await store.put(url, new Response(bytes)); } catch (_) {} }
+  return bytes;
+}
+
+// Fonts a subtitle file asks for, from its group's font folder.
+//   { folder, dir }  — a MEGA subtitle: that series' font folder;
+//   { title }        — any other subtitle (AnimeSub): a series folder of that
+//                      title in any group's MEGA (the same season first);
+//   names            — Style Fontname + \fn names used by the file.
+// Face names come from each font's `name` table (cached per file handle);
+// unknown files are fetched name-hinted first, within a download budget.
+const MEGA_FONT_META_KEY = 'megaFontMeta';
+const MEGA_FONT_BUDGET = 80e6;        // bytes fetched per call to discover names
+const MEGA_FONT_RETURN_MAX = 40e6;    // bytes sent back to the page
+async function megaFonts(payload) {
+  const needed = [...new Set((payload?.names || []).map(FONTN.normFontName).filter(Boolean))].slice(0, 100);
+  if (!needed.length) return { ok: true, fonts: [], missing: [] };
+  const folders = await megaFolders();
+  let cands = [], from = null;
+  const src = folders.find(f => f.handle === payload.folder);
+  if (src) {
+    const L = await megaListing(src, false);
+    cands = MEGA.fontsForDir(L.fonts, L.files, String(payload.dir || '')).map(file => ({ folder: src, file }));
+    if (cands.length) from = src.group;
+  }
+  if (!cands.length && payload.title) {
+    for (const f of folders.filter(f => !f.titles || MEGA.seriesMatches(f.titles, payload.title))) {
+      try {
+        const best = MEGA.fontBasesForTitle((await megaListing(f, false)).fonts, payload.title)[0];
+        if (best) { cands = best.fonts.map(file => ({ folder: f, file })); from = `${f.group}: ${best.base}`; break; }
+      } catch (_) {}
+    }
+  }
+  if (!cands.length) return { ok: true, fonts: [], missing: needed, from: null };
+
+  const want = new Set(needed), found = new Set();
+  const { [MEGA_FONT_META_KEY]: meta = {} } = await chrome.storage.local.get(MEGA_FONT_META_KEY);
+  const mark = (faces) => { let hit = false; for (const fc of faces) for (const n of fc.names) if (want.has(n)) { found.add(n); hit = true; } return hit; };
+  for (const c of cands) if (meta[c.file.h]) mark(meta[c.file.h]);
+  const unknown = cands.filter(c => !meta[c.file.h])
+    .map(c => ({ ...c, hint: MEGA.fontFileHint(c.file.name, needed) }))
+    .sort((a, b) => b.hint - a.hint || a.file.size - b.file.size);
+  const fresh = new Map();
+  let spent = 0, dirty = false, next = 0;
+  // Four downloads in flight (API calls stay queued in megaApi; the CDN
+  // transfers overlap).  A worker stops once every name is found.
+  const worker = async () => {
+    while (next < unknown.length && !needed.every(n => found.has(n))) {
+      const c = unknown[next++];
+      if (spent + c.file.size > MEGA_FONT_BUDGET) continue;
+      spent += c.file.size;
+      let bytes;
+      try { bytes = await megaFileBytes(c.folder, c.file, true); } catch (_) { continue; }
+      meta[c.file.h] = FONTN.parseFontFaces(bytes).map(f => ({ names: f.names.slice(0, 8), weight: f.weight, italic: f.italic }));
+      dirty = true;
+      if (mark(meta[c.file.h])) fresh.set(c.file.h, bytes);
+    }
+  };
+  await Promise.all([worker(), worker(), worker(), worker()]);
+
+  // Second pass: names the series folder lacks ("Lato", a font the group only
+  // shipped with another show) — files NAMED like them anywhere in the big
+  // group folders (series-only folders skipped: one listing each).
+  const missing = () => needed.filter(n => !found.has(n));
+  if (missing().length) {
+    const seen = new Set(cands.map(c => c.file.h));
+    const extra = [];
+    for (const f of folders.filter(f => !f.titles || f === src)) {
+      let L; try { L = await megaListing(f, false); } catch (_) { continue; }
+      for (const file of L.fonts) {
+        if (seen.has(file.h)) continue;
+        const hint = MEGA.fontFileHint(file.name, missing());
+        if (hint >= 2) { seen.add(file.h); extra.push({ folder: f, file, hint }); }
+      }
+    }
+    // One file per name spelling: groups re-upload the same font per series.
+    const byName = new Map();
+    for (const c of extra.sort((a, b) => b.hint - a.hint || a.file.size - b.file.size)) {
+      const k = c.file.name.toLowerCase();
+      if (!byName.has(k)) byName.set(k, c);
+    }
+    let budget = 30e6;
+    for (const c of [...byName.values()].slice(0, 24)) {
+      if (!missing().length) break;
+      if (!meta[c.file.h]) {
+        if (c.file.size > budget) continue;
+        budget -= c.file.size;
+        let bytes;
+        try { bytes = await megaFileBytes(c.folder, c.file, true); } catch (_) { continue; }
+        meta[c.file.h] = FONTN.parseFontFaces(bytes).map(f => ({ names: f.names.slice(0, 8), weight: f.weight, italic: f.italic }));
+        dirty = true;
+        if (mark(meta[c.file.h])) fresh.set(c.file.h, bytes);
+      } else mark(meta[c.file.h]);
+      if ((meta[c.file.h] || []).some(fc => fc.names.some(n => want.has(n)))) cands.push(c);
+    }
+  }
+  if (dirty) await chrome.storage.local.set({ [MEGA_FONT_META_KEY]: meta });
+
+  const fonts = [], have = new Set();
+  const faceKey = (fc) => fc.names.filter(n => want.has(n)).sort().join('|') + '|' + fc.weight + (fc.italic ? 'i' : '');
+  let sent = 0;
+  for (const c of cands) {
+    const faces = (meta[c.file.h] || []).filter(fc => fc.names.some(n => want.has(n)));
+    // The same face twice ("A-OTF_X.otf" next to "A-OTF X.otf"): send one.
+    if (!faces.length || faces.every(fc => have.has(faceKey(fc))) || sent + c.file.size > MEGA_FONT_RETURN_MAX) continue;
+    faces.forEach(fc => have.add(faceKey(fc)));
+    let bytes = fresh.get(c.file.h);
+    if (!bytes) { try { bytes = await megaFileBytes(c.folder, c.file, true); } catch (_) { continue; } }
+    sent += bytes.length;
+    fonts.push({
+      h: c.file.h, name: c.file.name, base64: MEGA.b64Encode(bytes),
+      faces: faces.map(fc => ({ names: fc.names.filter(n => want.has(n)), weight: fc.weight, italic: fc.italic })),
+    });
+  }
+  return { ok: true, fonts, missing: needed.filter(n => !found.has(n)), from };
 }
 
 async function megaSearch(payload) {
@@ -227,14 +367,8 @@ async function megaDownload(payload) {
   const file = (await megaIndex(folder, false)).find(f => f.h === payload.h);
   if (!file) return { ok: false, error: 'not-in-index' };
   if (file.size > MEGA_MAX_FILE) return { ok: false, error: 'too-large' };
-  const g = await megaApi(folder.handle, { a: 'g', g: 1, ssl: 1, n: file.h });
-  if (!g || !g.g) return { ok: false, error: 'no-download-url' };
-  const resp = await fetch(g.g, { signal: AbortSignal.timeout(30000) });
-  if (!resp.ok) return { ok: false, error: 'MEGA HTTP ' + resp.status };
-  const enc = new Uint8Array(await resp.arrayBuffer());
-  const k32 = Uint8Array.from(atob(file.k), c => c.charCodeAt(0));
-  const key = await crypto.subtle.importKey('raw', MEGA.fileAesKey(k32), 'AES-CTR', false, ['decrypt']);
-  const bytes = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-CTR', counter: MEGA.fileCtrIv(k32), length: 64 }, key, enc));
+  let bytes;
+  try { bytes = await megaFileBytes(folder, file, false); } catch (e) { return { ok: false, error: e.message }; }
   return { ok: true, filename: file.name, base64: MEGA.b64Encode(bytes), size: bytes.length, group: folder.group, dir: file.dir };
 }
 
@@ -266,7 +400,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   const fn = msg.type === MSG.AS_SEARCH ? animesubSearch : msg.type === MSG.AS_DOWNLOAD ? animesubDownload
            : msg.type === MSG.AS_TITLE ? resolveTitle
            : msg.type === MSG.MEGA_SEARCH ? megaSearch : msg.type === MSG.MEGA_DOWNLOAD ? megaDownload
-           : msg.type === MSG.MEGA_FOLDERS ? megaFoldersMsg : null;
+           : msg.type === MSG.MEGA_FOLDERS ? megaFoldersMsg : msg.type === MSG.MEGA_FONTS ? megaFonts : null;
   if (!fn) return;
   fn(msg.payload).then(sendResponse).catch(e => {
     const timedOut = e && (e.name === 'TimeoutError' || e.name === 'AbortError');

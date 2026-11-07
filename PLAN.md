@@ -18,7 +18,8 @@
 | 6 | Pamięć per odcinek: metadane źródła w rekordzie (`site`, `id`, autor) | ✅ kod (wybór źródła per odcinek, pick AnimeSub 1 rok + synchro, „Pobierz ponownie”); do sprawdzenia na koncie |
 | 7 | Instrukcja testów (Kusuriya S3, Frieren) i strojenia synchronizacji | ✅ ANIMESUB.md: użycie, scenariusz testowy, synchro TV/BD/fps |
 | 8 | **Foldery MEGA grup** (zamiast Discorda): publiczne foldery „wszystkie napisy” FrixySubs i FujiSubs + własne linki; lista plików odszyfrowana w przeglądarce, cache 12 h, wyszukiwanie po nazwie pliku, pobranie i odszyfrowanie AES-CTR jednego pliku; id `custom:mega` | ✅ SW sprawdzony w Chromium (szukanie 0,5 s, z cache 17 ms, ASS 82 kB w 0,25 s); panel do sprawdzenia na koncie |
-| 9 | Czcionki z folderów `Czcionki/` grup dla libass; Discord (wariant B) tylko jeśli MEGA nie wystarczy | później |
+| 9 | **Czcionki grup** z folderów `Czcionki/` w MEGA: indeks plików czcionek, nazwy z tabeli `name` (TTF/OTF/TTC), dobór per seria + po nazwie w całych folderach grup, cache (Cache Storage + meta nazw); do libass (`fonts`) i CSS (`FontFace`) | ✅ SW sprawdzony na żywo (Frieren 7/7, DMDP 13/13 i 15/15, Overlord IV 3/5 — 2 nazwy nie istnieją w żadnym folderze; 1. raz 5–14 s, potem 0,1–9 s); FontFace sprawdzone w Chromium; znaki libass do sprawdzenia na koncie |
+| 10 | Discord (wariant B) — tylko jeśli MEGA nie wystarczy | odłożone |
 
 ## Discord — ustalenia i granice
 

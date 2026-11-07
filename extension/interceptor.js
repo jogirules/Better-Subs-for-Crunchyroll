@@ -3302,6 +3302,32 @@
     try { window.postMessage({ type: PROTOCOL.POST.SIGN_ASS, token: TOGGLE_TOKEN, ass }, window.location.origin); } catch (_) {}
   }
   function setSignSource(raw) { _signRawAss = raw || null; pushSignLayer(); }
+
+  // Fork: ask content.js to load the fansub group's fonts for a custom source
+  // from AnimeSub / MEGA (libass signs + CSS dialogue use the .ass Fontname).
+  // Names: Style Fontname + \fn of the signs part, plus the dialogue cues' fonts.
+  function requestGroupFonts(record) {
+    const o = record && record.origin;
+    if (!o || (o.site !== 'mega' && o.site !== 'animesub')) return;
+    const names = new Set();
+    const ass = record.signRawAss || '';
+    let fmtIdx = null;
+    for (const line of ass.split('\n')) {
+      if (/^Format\s*:/i.test(line) && /Fontname/i.test(line)) {
+        fmtIdx = line.slice(line.indexOf(':') + 1).split(',').map((x) => x.trim().toLowerCase()).indexOf('fontname');
+      } else if (fmtIdx != null && fmtIdx >= 0 && /^Style\s*:/i.test(line)) {
+        const v = line.slice(line.indexOf(':') + 1).split(',')[fmtIdx];
+        if (v && v.trim()) names.add(v.trim());
+      }
+    }
+    for (const m of ass.matchAll(/\\fn([^\\}]+)/g)) if (m[1].trim()) names.add(m[1].trim());
+    for (const c of record.srcCues || []) if (c && c.fontName) names.add(c.fontName);
+    if (!names.size) return;
+    const req = o.site === 'mega'
+      ? { folder: o.folder, dir: o.dir || '', title: '', names: [...names].slice(0, 100) }
+      : { title: o.title || '', names: [...names].slice(0, 100) };
+    try { window.postMessage({ type: PROTOCOL.POST.FONTS, token: TOGGLE_TOKEN, req }, window.location.origin); } catch (_) {}
+  }
   // Wrap overlayActive writes so the libass sign layer follows on/off (it shows
   // signs only while the overlay is active, and clears the moment it turns off).
   function setOverlayActive(v) { overlayActive = v; pushSignLayer(); if (v) maybeWarnHardsub(); }
@@ -4300,6 +4326,7 @@
       // MT and uploaded ('local') Sources both carry their own typeset signs in
       // record.signRawAss; null clears libass for sign-less (SRT/VTT) sources.
       setSignSource(record.signRawAss || null);
+      requestGroupFonts(record);
       ep.setActiveSubUrl(null);
       setOverlayActive(true);
       syncSubSuppression();

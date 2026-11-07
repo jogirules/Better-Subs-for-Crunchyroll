@@ -39,6 +39,7 @@ for (const p of [
   'extension/lib/title-map.js',
   'extension/lib/vendor/aes.js',
   'extension/lib/mega.js',
+  'extension/lib/font-names.js',
 ]) load(p);
 const { animesub: AS, zipRead: ZIP, legacySubs: LEG, textDecode: TD, customSource: CUSTOM, subIngest: ING, titleMap: TM } = globalThis.CRSubFix;
 const iso2 = (u8) => new TextDecoder('iso-8859-2').decode(u8);
@@ -317,6 +318,71 @@ section('mega');
   // aes-js CTR with the same counter must agree with WebCrypto (MEGA's layout).
   const ref = new aesjs.ModeOfOperation.ctr(MG.fileAesKey(k32), new aesjs.Counter(MG.fileCtrIv(k32))).encrypt(plain);
   eq('ctr matches aes-js', MG.b64Encode(new Uint8Array(await crypto.subtle.encrypt(algo, key, plain))), MG.b64Encode(ref));
+}
+
+// ── Group fonts ────────────────────────────────────────────────────────────
+section('fonts');
+{
+  const FN = globalThis.CRSubFix.fontNames;
+  const MG = globalThis.CRSubFix.mega;
+  // Synthetic sfnt: 'name' (ids 1, 4 on Windows; 6 on Mac) + 'OS/2'.
+  function sfnt(family, full, ps, weight, italic, magic = 0x00010000) {
+    const recs = [[3, 1, 1, family], [3, 1, 4, full], [1, 0, 6, ps]];
+    const strs = recs.map(([p, , , t]) => p === 3
+      ? Uint8Array.from([...t].flatMap((c) => [c.charCodeAt(0) >> 8, c.charCodeAt(0) & 255]))
+      : Uint8Array.from([...t].map((c) => c.charCodeAt(0))));
+    const nameLen = 6 + recs.length * 12 + strs.reduce((a, b) => a + b.length, 0);
+    const os2Len = 78, off0 = 12 + 2 * 16;
+    const buf = new Uint8Array(off0 + nameLen + os2Len), dv = new DataView(buf.buffer);
+    dv.setUint32(0, magic); dv.setUint16(4, 2);
+    const tbl = (i, tag, off, len) => { for (let j = 0; j < 4; j++) buf[12 + i * 16 + j] = tag.charCodeAt(j); dv.setUint32(12 + i * 16 + 8, off); dv.setUint32(12 + i * 16 + 12, len); };
+    tbl(0, 'OS/2', off0 + nameLen, os2Len); tbl(1, 'name', off0, nameLen);
+    let o = off0; dv.setUint16(o + 2, recs.length); dv.setUint16(o + 4, 6 + recs.length * 12);
+    let so = 0;
+    recs.forEach(([p, e, id], i) => { const r = o + 6 + i * 12; dv.setUint16(r, p); dv.setUint16(r + 2, e); dv.setUint16(r + 6, id); dv.setUint16(r + 8, strs[i].length); dv.setUint16(r + 10, so); buf.set(strs[i], o + 6 + recs.length * 12 + so); so += strs[i].length; });
+    dv.setUint16(off0 + nameLen + 4, weight); dv.setUint16(off0 + nameLen + 62, italic ? 1 : 0);
+    return buf;
+  }
+  const faces = FN.parseFontFaces(sfnt('Gandhi Sans', 'Gandhi Sans Bold Italic', 'GandhiSans-BoldItalic', 700, true));
+  eq('ttf names', faces[0] && faces[0].names, ['gandhi sans', 'gandhi sans bold italic', 'gandhisans-bolditalic']);
+  eq('ttf weight/italic', faces[0] && [faces[0].weight, faces[0].italic], [700, true]);
+  eq('otf magic', FN.parseFontFaces(sfnt('A', 'A', 'A', 400, false, 0x4f54544f)).length, 1);
+  {
+    const a = sfnt('One', 'One', 'One', 400, false), b = sfnt('Two', 'Two Bold', 'Two-Bold', 700, false);
+    const ttc = new Uint8Array(20 + a.length + b.length), dv = new DataView(ttc.buffer);
+    dv.setUint32(0, 0x74746366); dv.setUint32(8, 2); dv.setUint32(12, 20); dv.setUint32(16, 20 + a.length);
+    // Table offsets inside a TTC are file-relative: shift them.
+    const shift = (f, by) => { const c = f.slice(), d = new DataView(c.buffer); for (let i = 0; i < 2; i++) d.setUint32(12 + i * 16 + 8, d.getUint32(12 + i * 16 + 8) + by); return c; };
+    ttc.set(shift(a, 20), 20); ttc.set(shift(b, 20 + a.length), 20 + a.length);
+    eq('ttc faces', FN.parseFontFaces(ttc).map((f) => f.names[0]), ['one', 'two']);
+  }
+  eq('not a font', FN.parseFontFaces(new TextEncoder().encode('[Script Info]\nTitle: x')), []);
+  eq('norm @vertical', FN.normFontName('@MS  Gothic '), 'ms gothic');
+
+  eq('fontBase Czcionki', MG.fontBase('SUBY/F/Fumetsu/Czcionki'), 'SUBY/F/Fumetsu');
+  eq('fontBase "X Fonty"', MG.fontBase('Suby/Darling/Darling in the FranXX Fonty'), 'Suby/Darling');
+  eq('fontBase loose', MG.fontBase('Suby/Rakudai'), 'Suby/Rakudai');
+  const fonts = [
+    { h: 'a', dir: 'SUBY/F/Fumetsu/Czcionki', name: 'a.ttf' },
+    { h: 'b', dir: 'SUBY/F/Fumetsu 2/Czcionki', name: 'b.ttf' },
+    { h: 'c', dir: 'SUBY/Fonty', name: 'c.ttf' },
+  ];
+  const subs = [{ dir: 'SUBY/F/Fumetsu' }, { dir: 'SUBY/F/Fumetsu 2/BD' }];
+  eq('fontsForDir series', MG.fontsForDir(fonts, subs, 'SUBY/F/Fumetsu').map((f) => f.h), ['a']);
+  eq('fontsForDir deeper sub', MG.fontsForDir(fonts, subs, 'SUBY/F/Fumetsu 2/BD').map((f) => f.h), ['b']);
+  eq('fontsForDir no prefix clash', MG.fontsForDir(fonts.slice(0, 1), subs, 'SUBY/F/Fumetsu 2/BD').map((f) => f.h), []);
+  const many = Array.from({ length: 50 }, (_, i) => ({ dir: 'SUBY/X/S' + i }));
+  eq('fontsForDir group root skipped', MG.fontsForDir(fonts, many, 'SUBY/X/S3').map((f) => f.h), []);
+  const tf = [
+    { h: '1', dir: 'Suby/Overlord/Czcionki', name: 'x.ttf' },
+    { h: '4', dir: 'Suby/Overlord IV/Czcionki', name: 'y.ttf' },
+    { h: 'k', dir: 'Suby/Kingdom/Czcionki', name: 'z.ttf' },
+  ];
+  eq('fontBasesForTitle season first', MG.fontBasesForTitle(tf, 'Overlord IV').map((b) => b.base), ['Suby/Overlord IV', 'Suby/Overlord']);
+  eq('fontBasesForTitle s1', MG.fontBasesForTitle(tf, 'Overlord')[0].base, 'Suby/Overlord');
+  eq('hint exact', MG.fontFileHint('GandhiSans.otf', ['gandhi sans']), 3);
+  eq('hint prefix', MG.fontFileHint('GandhiSans-Bold.otf', ['gandhi sans']), 2);
+  eq('hint none', MG.fontFileHint('Arimo.ttf', ['gandhi sans']), 0);
 }
 
 // ── End to end: archive → custom source record ─────────────────────────────
