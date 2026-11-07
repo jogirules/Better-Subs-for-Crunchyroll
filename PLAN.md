@@ -16,7 +16,7 @@
 | 4 | UI „Szukaj na AnimeSub”: fraza, typ tytułu, lista wyników, wybór pliku z archiwum; id `custom:animesub` | ✅ kod; panel do sprawdzenia na koncie (bez logowania brak odtwarzacza) |
 | 5 | Tytuł/odcinek ze strony CR + AniList (romaji, cache) | ✅ (CR cms/objects + AniList; panel do sprawdzenia na koncie) |
 | 6 | Pamięć per odcinek: metadane źródła w rekordzie (`site`, `id`, autor) | ✅ kod (wybór źródła per odcinek, pick AnimeSub 1 rok + synchro, „Pobierz ponownie”); do sprawdzenia na koncie |
-| 7 | Instrukcja testów (Kusuriya S3, Frieren) i strojenia synchronizacji | |
+| 7 | Instrukcja testów (Kusuriya S3, Frieren) i strojenia synchronizacji | ✅ ANIMESUB.md: użycie, scenariusz testowy, synchro TV/BD/fps |
 | 8 | **Discord: „Szukaj w Discordzie” z odtwarzacza CR → karta Discorda z wpisanym wyszukiwaniem → „Wyślij do Better Subs” przy załączniku → napisy same trafiają do odcinka**; id `custom:discord` | nowy, po decyzji |
 
 ## Discord — ustalenia i granice
