@@ -56,6 +56,8 @@
     GET_DIAG:     'GET_DIAGNOSTICS',  // popup       → content (issue-report bundle)
     SET_BADGE:    'setBadge',         // content     → background (badge update)
     MT_TRANSLATE: 'MT_TRANSLATE',     // content     → background (translate a batch)
+    AS_SEARCH:    'AS_SEARCH',        // content     → background (AnimeSub search)
+    AS_DOWNLOAD:  'AS_DOWNLOAD',      // content     → background (AnimeSub ZIP, base64)
   };
 
   // window.postMessage `type` values sent between content.js (isolated world)

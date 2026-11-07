@@ -11,8 +11,87 @@
  *    optional_host_permissions the popup requests when the user enables MT.
  */
 
-importScripts('lib/protocol.js');
+importScripts('lib/protocol.js', 'lib/animesub.js');
 const { MSG } = self.CRSubFix.protocol;
+const AS = self.CRSubFix.animesub;
+
+// ── AnimeSub.info (fork) ───────────────────────────────────────────────────
+// Every request is user-initiated (a click in the player).  One shared queue
+// with a minimum gap keeps us polite: no parallel requests, no bursts.
+// Cookies: the search response sets `ansi_sciagnij`, and the download must
+// carry it back — credentials:'include' + the http://animesub.info host
+// permission lets Chrome attach it from the service worker.
+const AS_MIN_GAP_MS = 3000;
+let asQueue = Promise.resolve();
+let asLastAt = 0;
+function asRequest(url, init) {
+  const run = async () => {
+    const wait = asLastAt + AS_MIN_GAP_MS - Date.now();
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    try {
+      return await fetch(url, { credentials: 'include', signal: AbortSignal.timeout(20000), ...init });
+    } finally {
+      asLastAt = Date.now();
+    }
+  };
+  const p = asQueue.then(run, run);
+  asQueue = p.catch(() => {});
+  return p;
+}
+
+async function asSearchRaw({ query, titleType, page }) {
+  const resp = await asRequest(AS.searchUrl({ query, titleType, page }));
+  if (!resp.ok) throw new Error('AnimeSub HTTP ' + resp.status);
+  // No charset header; the page's <meta> says ISO-8859-2.
+  const html = new TextDecoder('iso-8859-2').decode(await resp.arrayBuffer());
+  return AS.parseSearch(html);
+}
+
+async function animesubSearch(payload) {
+  const query = String(payload?.query || '').trim();
+  if (!query) return { ok: false, error: 'empty-query' };
+  const { results, hasNext } = await asSearchRaw({ query, titleType: payload.titleType, page: payload.page | 0 });
+  // Tokens (sh) are deliberately NOT returned: they expire with the next search.
+  return { ok: true, results, hasNext };
+}
+
+// Download = fresh search (for a current `sh`) + POST, back to back in the queue.
+async function animesubDownload(payload) {
+  const id = String(payload?.id || '');
+  if (!/^\d+$/.test(id)) return { ok: false, error: 'bad-id' };
+  const { tokens } = await asSearchRaw({ query: payload.query, titleType: payload.titleType, page: payload.page | 0 });
+  const sh = tokens[id];
+  if (!sh) return { ok: false, error: 'not-in-results' };
+  const resp = await asRequest(AS.BASE + '/sciagnij.php', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: AS.downloadBody(id, sh),
+  });
+  if (!resp.ok) return { ok: false, error: 'AnimeSub HTTP ' + resp.status };
+  const bytes = new Uint8Array(await resp.arrayBuffer());
+  const isZip = bytes[0] === 0x50 && bytes[1] === 0x4b;
+  if (!isZip) {
+    const text = new TextDecoder('iso-8859-2').decode(bytes.subarray(0, 2000));
+    return { ok: false, error: AS.isSecurityError(text) ? 'security-error' : 'not-a-zip' };
+  }
+  const cd = resp.headers.get('Content-Disposition') || '';
+  const filename = (/filename=([^;]+)/i.exec(cd) || [])[1]?.trim().replace(/^"|"$/g, '') || `animesub_${id}.zip`;
+  // chrome.runtime messages are JSON — ship the archive as base64.
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return { ok: true, filename, base64: btoa(bin), size: bytes.length };
+}
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (!msg || typeof msg !== 'object') return;
+  const fn = msg.type === MSG.AS_SEARCH ? animesubSearch : msg.type === MSG.AS_DOWNLOAD ? animesubDownload : null;
+  if (!fn) return;
+  fn(msg.payload).then(sendResponse).catch(e => {
+    const timedOut = e && (e.name === 'TimeoutError' || e.name === 'AbortError');
+    sendResponse({ ok: false, error: timedOut ? 'timeout' : 'fetch-failed: ' + (e && e.message) });
+  });
+  return true;
+});
 
 // ── Machine translation ────────────────────────────────────────────────────
 // DeepL free keys end in ':fx' and use a different host from pro keys.

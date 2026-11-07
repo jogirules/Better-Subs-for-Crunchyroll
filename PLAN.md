@@ -11,7 +11,7 @@
 | 0 | Fork `jogirules/Better-Subs-for-Crunchyroll`, gałąź `animesub`, `ANIMESUB.md` | ✅ |
 | 1 | Czyste biblioteki + testy Node: `zip-read` (stored/deflate/LZMA), `animesub` (parser), `legacy-subs` (TMPlayer/MicroDVD/MPL2), `text-decode` | ✅ |
 | 1b | **Wspólna ścieżka „bajty → napisy”** (`lib/sub-ingest.js`) + istniejące „Wczytaj plik” przyjmuje też `.zip`/`.txt`/`.sub` i przeciąganie pliku na odtwarzacz | ✅ (UI wyboru z archiwum i drop — do sprawdzenia na odcinku) |
-| 2 | Spike w service workerze: AnimeSub wyszukaj → pobierz → rozpakuj → zdekoduj; weryfikacja, czy `fetch` z SW niesie ciasteczko `ansi_sciagnij` | |
+| 2 | Spike w service workerze: AnimeSub wyszukaj → pobierz → rozpakuj → zdekoduj; weryfikacja, czy `fetch` z SW niesie ciasteczko `ansi_sciagnij` | ✅ (cookie działa; 3 żądania / 6,7 s) |
 | 3 | RPC `animesubSearch`/`animesubDownload`, kolejka ≥ 3 s między żądaniami, cache wyników 24 h (bez `sh`) | |
 | 4 | UI „Szukaj na AnimeSub”: fraza, typ tytułu, lista wyników, wybór pliku z archiwum; id `custom:animesub` | |
 | 5 | Tytuł/odcinek ze strony CR + AniList (romaji, cache) | |
@@ -76,3 +76,12 @@ Ograniczenie: grupy wydające tylko MKV z wbudowanymi napisami (softsuby) — wy
 ASS z MKV to osobny, cięższy etap (pliki setek MB); na razie poza zakresem.
 Do sprawdzenia na żywo (spike): czy wpisany tekst bez filtra trafia w nazwy plików,
 jak wyglądają wyniki i przyciski pobierania w DOM, czy URL z CDN działa z SW.
+
+## Ustalenia z testów na żywo (2026-11-07)
+- **Podwójne napisy**: nowy odtwarzacz CR wypala w obraz napisy w języku konta (PL),
+  więc nakładka rysowała się nad nimi. Wybór własnego źródła włącza teraz
+  `hideOfficialSubs` (przejście na strumień bez napisów, na żywo albo po odświeżeniu).
+- `sh` z ostatniego wyszukiwania działa dla wszystkich wyników tej strony.
+- CR numeruje Kusuriya absolutnie (S3 ep05 = E53) — etap 5 musi to przeliczać.
+- Metadane formatu na AnimeSub bywają błędne ("TMPlayer" z ASS w środku) — format
+  rozpoznajemy po treści.
