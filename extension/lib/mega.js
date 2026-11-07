@@ -33,6 +33,14 @@
     { group: 'Shisha',    link: 'https://mega.nz/folder/JOBiUJKZ#RuIjBCN-Ha6vxksbKkCf0w' },
     { group: 'FrixySubs', link: 'https://mega.nz/folder/KQ00iCLb#0jW1zZcli8N-EUtbZszXYw' },
     { group: 'FujiSubs',  link: 'https://mega.nz/folder/U3ZBTZoZ#wJZumsXp5bzLXc6Hef5PXQ' },
+    // Groups without an "all subtitles" folder: one folder per series, listed
+    // only when the searched title matches `titles` (see seriesMatches).
+    // Max-Subs, from #wydawane-anime on their Discord (2026-11-07; the other
+    // three Max folders were empty or deleted).  BD-timed releases.
+    { group: 'Max-Subs', titles: ['Isekai Nonbiri Nouka'],
+      link: 'https://mega.nz/folder/5sxWQRiZ#nbCQve5zrGAKbEmSqXHeOg' },
+    { group: 'Max-Subs', titles: ['Akuyaku Reijou Level 99'],
+      link: 'https://mega.nz/folder/wh5lmC6a#wAoYUBqux-9BgTGfMN6x1Q' },
   ];
 
   const SUB_EXT = /\.(ass|ssa|srt|vtt|txt|sub|mpl|zip)$/i;
@@ -193,7 +201,24 @@
     return hits.slice(0, limit);
   }
 
+  // Does a per-series folder (its `titles`) belong to this search?  Either
+  // side may be the longer one: "Akuyaku Reijou Level 99" vs AniList's
+  // "Akuyaku Reijou Level 99: Watashi wa Ura-Boss desu ga Maou dewa Arimasen".
+  function seriesMatches(titles, query) {
+    const core = (t) => { const w = words(t); return w.filter((x, i) => x !== 'season' && w[i - 1] !== 'season'); };
+    const q = new Set(core(query));
+    if (!q.size) return false;
+    return (titles || []).some((t) => {
+      const tw = core(t);
+      if (!tw.length) return false;
+      if (tw.every((w) => q.has(w))) return true;
+      // A shorter query must still name most of the series ("Nonbiri Nouka").
+      return [...q].every((w) => tw.includes(w)) && q.size >= 0.6 * tw.length;
+    });
+  }
+
   NS.CRSubFix.mega = {
+    seriesMatches,
     API, DEFAULT_FOLDERS, parseFolderLink, b64urlDecode, b64Encode,
     decryptListing, buildIndex, search, episodeNumbers, fileAesKey, fileCtrIv,
   };

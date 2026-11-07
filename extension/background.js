@@ -177,6 +177,16 @@ async function megaFolders() {
     .map(f => ({ ...f, ...MEGA.parseFolderLink(f.link) }))
     .filter(f => f.handle && !seen.has(f.handle) && seen.add(f.handle));
 }
+// Folder chips in the panel: one per group (per-series folders collapse).
+function megaFolderList(folders) {
+  const out = [];
+  for (const { group, handle, builtin, titles } of folders) {
+    const prev = out.find(f => f.group === group && f.builtin && builtin);
+    if (prev) prev.series = (prev.series || 1) + 1;
+    else out.push({ group, handle, builtin: !!builtin, ...(titles ? { series: 1 } : {}) });
+  }
+  return out;
+}
 
 async function megaIndex(folder, refresh) {
   const key = MEGA_INDEX_PREFIX + folder.handle;
@@ -194,7 +204,9 @@ async function megaSearch(payload) {
   const title = String(payload?.title || '').trim();
   if (!title) return { ok: false, error: 'empty-query' };
   const episodes = (payload.episodes || []).map(n => parseInt(n, 10)).filter(n => n > 0);
-  const folders = await megaFolders();
+  // Per-series folders (with `titles`) are opened only when the title matches —
+  // the index decides, so a search touches MEGA for at most a few of them.
+  const folders = (await megaFolders()).filter(f => !f.titles || MEGA.seriesMatches(f.titles, title));
   const all = [], errors = [];
   for (const [order, f] of folders.entries()) {
     try {
@@ -239,14 +251,14 @@ async function megaFoldersMsg(payload) {
     const files = await megaIndex({ ...parsed, group }, true);
     extra.push({ group, link: `https://mega.nz/folder/${parsed.handle}#${parsed.keyB64}` });
     await chrome.storage.local.set({ [MEGA_FOLDERS_KEY]: extra });
-    return { ok: true, files: files.length, folders: (await megaFolders()).map(({ group, handle, builtin }) => ({ group, handle, builtin: !!builtin })) };
+    return { ok: true, files: files.length, folders: megaFolderList(await megaFolders()) };
   }
   if (op === 'remove') {
     const keep = extra.filter(f => MEGA.parseFolderLink(f.link)?.handle !== payload.handle);
     await chrome.storage.local.set({ [MEGA_FOLDERS_KEY]: keep });
     await chrome.storage.local.remove(MEGA_INDEX_PREFIX + payload.handle);
   }
-  return { ok: true, folders: (await megaFolders()).map(({ group, handle, builtin }) => ({ group, handle, builtin: !!builtin })) };
+  return { ok: true, folders: megaFolderList(await megaFolders()) };
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {

@@ -48,7 +48,7 @@ workera giną z błędem „message port closed”).
 ### Foldery MEGA grup
 
 W panelu AnimeSub przycisk **📁 Foldery MEGA** (albo ▾ → Manage → **📁 Szukaj w folderach
-MEGA grup…**) przeszukuje publiczne foldery Shisha Subs, FrixySubs i FujiSubs po nazwach plików (przy równym dopasowaniu Shisha jest pierwsza). Pola:
+MEGA grup…**) przeszukuje naraz publiczne foldery Shisha Subs, FrixySubs i FujiSubs po nazwach plików (przy równym dopasowaniu Shisha jest pierwsza). Grupy bez folderu zbiorczego (Max-Subs: Isekai Nonbiri Nouka, Akuyaku Reijou Level 99) są w indeksie tytuł → folder serii; ich folder jest otwierany tylko, gdy tytuł pasuje. Pola:
 tytuł (romaji, jak na AniList) i numery odcinka (np. `5, 53` — w sezonie i absolutny; puste =
 cały sezon). Panel sam wpisuje tytuł i numery z Crunchyroll/AniList. Pierwsze wyszukiwanie
 pobiera listę plików folderu (kilka sekund), potem przez 12 h szuka lokalnie (↻ odświeża).

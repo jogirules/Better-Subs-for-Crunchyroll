@@ -301,6 +301,10 @@ section('mega');
   eq('x is not a numeral', names(MG.search(sh, { title: 'SPY x FAMILY', episodes: [8] })), ['s3']);
   eq('full-width colon, 4th season', names(MG.search(sh, { title: 'Re:Zero kara Hajimeru Isekai Seikatsu 4th Season', episodes: [3] })), ['s4']);
   eq('tie-break by folder order', names(MG.search([{ h: 'b', dir: 'A', name: 'Spy x Family - 08.ass', order: 1 }, { h: 'a', dir: 'B', name: 'Spy x Family - 08.ass', order: 0 }], { title: 'Spy x Family', episodes: [8] })), ['a', 'b']);
+  eq('series folder: long AniList title', MG.seriesMatches(['Akuyaku Reijou Level 99'], 'Akuyaku Reijou Level 99: Watashi wa Ura-Boss desu ga Maou dewa Arimasen'), true);
+  eq('series folder: short query', MG.seriesMatches(['Isekai Nonbiri Nouka'], 'isekai nonbiri nouka 2nd season'), true);
+  eq('series folder: other title', MG.seriesMatches(['Isekai Nonbiri Nouka'], 'Kusuriya no Hitorigoto'), false);
+  eq('series folder: one shared word', MG.seriesMatches(['Akuyaku Reijou Level 99'], 'Level 99'), false);
   eq('short head not used ("Re")', MG.search(sh, { title: 'Re:Monster', episodes: [3] }).length, 0);
 
   // File body: AES-CTR under the folded key / nonce (WebCrypto, as in the SW).
