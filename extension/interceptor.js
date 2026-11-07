@@ -698,8 +698,14 @@
     _fileInput.click();
   }
 
+  // Subtitle files and archives only, and small: a dropped video must not be
+  // read into memory.
+  const INGEST_EXT = /\.(ass|ssa|srt|vtt|txt|sub|mpl|zip)$/i;
+  const INGEST_MAX = 20 * 1024 * 1024;
   async function ingestSubtitleFile(file) {
     if (!currentEp()) return;
+    if (!INGEST_EXT.test(file.name || '')) { showErrorToast('To nie jest plik napisów (.ass/.srt/.txt/.sub/.zip).'); return; }
+    if (file.size > INGEST_MAX) { showErrorToast('Plik jest za duży jak na napisy.'); return; }
     let bytes;
     try { bytes = new Uint8Array(await file.arrayBuffer()); }
     catch (err) { showErrorToast('Could not read that subtitle file.'); return; }
@@ -845,12 +851,15 @@
       const absNote = meta.episodeAbs && meta.episodeInSeason && meta.episodeAbs !== meta.episodeInSeason
         ? ` (CR: E${meta.episodeAbs} = ep${meta.episodeInSeason} w sezonie)` : '';
       return {
-        candidates, meta,
+        candidates, meta, degraded: !t.ok,
         titles: [entry.romaji, first?.romaji].filter(Boolean),
         note: (t.ok ? `Tytuł z AniList: ${t.romaji}` : `Brak dopasowania w AniList — użyto tytułu z Crunchyroll`) + absNote,
       };
     })().catch((e) => { log.warn('AnimeSub suggestion failed:', e && e.message); return null; });
     _asSuggest.set(ep.guid, p);
+    // Keep only a full answer: a null (CR metadata not ready yet) or an
+    // AniList miss/timeout is retried the next time a panel opens.
+    p.then((r) => { if ((!r || r.degraded) && _asSuggest.get(ep.guid) === p) _asSuggest.delete(ep.guid); });
     return p;
   }
 
@@ -965,7 +974,7 @@
       list.innerHTML = ''; pager.innerHTML = '';
       const n = res.results.length;
       status.textContent = n
-        ? `Strona ${state.page + 1}: ${n} wynik${n === 1 ? '' : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 'i' : 'ów')}${res.cached ? ' (z pamięci podręcznej)' : ''}.`
+        ? `Strona ${state.page + 1}: ${n} ${plPlural(n, 'wynik', 'wyniki', 'wyników')}${res.cached ? ' (z pamięci podręcznej)' : ''}.`
         : 'Brak wyników. Spróbuj bez numeru odcinka albo innego typu tytułu.';
       // Auto-suggested searches: results that really are this title/season go
       // first (AnimeSub's search is loose and mixes in other seasons).
@@ -1080,10 +1089,16 @@
   // by file name.  The SW lists each folder once per 12 h (one API call),
   // searches locally and downloads + decrypts only the clicked file.
   const MEGA_PANEL_ID = 'cr-bsub-mega-panel';
+  // Polish count noun: 1 plik, 2–4 / 22–24 pliki, 5–21 / 25+ plików.
+  function plPlural(n, one, few, many) {
+    if (n === 1) return one;
+    return n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? few : many;
+  }
   function megaErrorText(code) {
     if (code === 'timeout') return 'MEGA nie odpowiada — spróbuj za chwilę.';
     if (code === 'bad-link') return 'To nie jest link do folderu MEGA (https://mega.nz/folder/…#…).';
     if (code === 'exists') return 'Ten folder już jest na liście.';
+    if (/wrong-key/.test(code || '')) return 'Klucz w linku nie pasuje do folderu (sprawdź część po #).';
     if (code === 'not-in-index') return 'Pliku nie ma już w folderze — wyszukaj ponownie.';
     if (code === 'too-large') return 'Plik jest za duży jak na napisy.';
     if (/^MEGA error -9/.test(code || '')) return 'Folder lub plik nie istnieje (usunięty albo zmieniony link).';
@@ -1179,7 +1194,7 @@
       const n = res.results.length;
       const err = res.errors && res.errors.length ? ` Niedostępne: ${res.errors.join('; ')}.` : '';
       status.textContent = (n
-        ? `${n}${n >= 40 ? '+' : ''} plik${n === 1 ? '' : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 'i' : 'ów')} w ${res.folders} folderach.`
+        ? `${n}${res.truncated ? '+' : ''} ${plPlural(n, 'plik', 'pliki', 'plików')} w ${res.folders} ${res.folders === 1 ? 'folderze' : 'folderach'}.`
         : `Brak plików dla „${q.title}”${q.episodes.length ? ` z odc. ${q.episodes.join('/')}` : ''}. Spróbuj bez numeru albo krótszego tytułu.`) + err;
       for (const r of res.results) list.appendChild(resultRow(r));
       list.scrollTop = 0;
@@ -1241,7 +1256,7 @@
       for (const f of folders || []) {
         const chip = document.createElement('span');
         chip.style.cssText = `border:1px solid ${THEME.panelEdge};border-radius:10px;padding:1px 7px;color:${THEME.text};`;
-        chip.textContent = f.series ? `${f.group} (${f.series} ${f.series === 1 ? 'seria' : (f.series % 10 >= 2 && f.series % 10 <= 4 && (f.series % 100 < 10 || f.series % 100 >= 20) ? 'serie' : 'serii')})` : f.group;
+        chip.textContent = f.series ? `${f.group} (${f.series} ${plPlural(f.series, 'seria', 'serie', 'serii')})` : f.group;
         if (f.series) chip.title = 'Foldery pojedynczych serii — przeszukiwane tylko, gdy tytuł pasuje';
         if (!f.builtin) {
           const x = document.createElement('span');

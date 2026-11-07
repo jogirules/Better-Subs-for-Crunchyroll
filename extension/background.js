@@ -42,6 +42,16 @@ function asRequest(url, init) {
   return p;
 }
 
+// A download is a search (fresh single-use `sh` + cookie) and a POST that must
+// see that same `sh`: every AnimeSub operation holds this lock for its whole
+// sequence, so no other search can land between the two.
+let asLock = Promise.resolve();
+function withAsLock(fn) {
+  const p = asLock.then(fn, fn);
+  asLock = p.catch(() => {});
+  return p;
+}
+
 async function asSearchRaw({ query, titleType, page }) {
   const resp = await asRequest(AS.searchUrl({ query, titleType, page }));
   if (!resp.ok) throw new Error('AnimeSub HTTP ' + resp.status);
@@ -78,16 +88,19 @@ async function animesubSearch(payload) {
     const hit = await asCacheGet(key);
     if (hit) return { ok: true, results: hit.results, hasNext: hit.hasNext, cached: true };
   }
-  const { results, hasNext } = await asSearchRaw(args);
+  const { results, hasNext } = await withAsLock(() => asSearchRaw(args));
   // Tokens (sh) are deliberately NOT returned or cached: they expire with the next search.
   await asCachePut(key, { results, hasNext });
   return { ok: true, results, hasNext };
 }
 
-// Download = fresh search (for a current `sh`) + POST, back to back in the queue.
+// Download = fresh search (for a current `sh`) + POST, under one lock.
 async function animesubDownload(payload) {
   const id = String(payload?.id || '');
   if (!/^\d+$/.test(id)) return { ok: false, error: 'bad-id' };
+  return withAsLock(() => animesubDownloadLocked(id, payload));
+}
+async function animesubDownloadLocked(id, payload) {
   const { tokens } = await asSearchRaw({ query: payload.query, titleType: payload.titleType, page: payload.page | 0 });
   const sh = tokens[id];
   if (!sh) return { ok: false, error: 'not-in-results' };
@@ -106,9 +119,7 @@ async function animesubDownload(payload) {
   const cd = resp.headers.get('Content-Disposition') || '';
   const filename = (/filename=([^;]+)/i.exec(cd) || [])[1]?.trim().replace(/^"|"$/g, '') || `animesub_${id}.zip`;
   // chrome.runtime messages are JSON — ship the archive as base64.
-  let bin = '';
-  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-  return { ok: true, filename, base64: btoa(bin), size: bytes.length };
+  return { ok: true, filename, base64: MEGA.b64Encode(bytes), size: bytes.length };
 }
 
 // ── AniList: English/localized series title + CR season → romaji (fork) ────
@@ -147,8 +158,9 @@ async function resolveTitle(payload) {
 // ── Public MEGA folders of fansub groups (fork) ────────────────────────────
 // A folder listing is one API call (FrixySubs: ~10k nodes, ~0.3 s); the
 // decrypted subtitle index is cached per folder for 12 h, so a search is
-// local and only a download touches MEGA again.  Requests are user-initiated
-// and serialized (same politeness rule as AnimeSub).
+// local and only a download touches MEGA again.  Requests follow a user action
+// (a search, a click, or a track they switched on → its group fonts) and are
+// serialized (same politeness rule as AnimeSub).
 const MEGA_INDEX_PREFIX = 'megaIndex_';
 const MEGA_INDEX_TTL_MS = 12 * 3600 * 1000;
 const MEGA_FOLDERS_KEY = 'megaFolders';          // user-added [{group, link}]
@@ -190,14 +202,18 @@ function megaFolderList(folders) {
 }
 
 // One listing call → subtitle files + font files (cached together, 12 h).
-async function megaListing(folder, refresh) {
+// cacheOnly: a stale or missing index returns null instead of calling MEGA.
+async function megaListing(folder, refresh, cacheOnly) {
   const key = MEGA_INDEX_PREFIX + folder.handle;
   if (!refresh) {
     const { [key]: hit } = await chrome.storage.local.get(key);
     if (hit && hit.fonts && Date.now() - hit.at < MEGA_INDEX_TTL_MS) return hit;
   }
+  if (cacheOnly) return null;
   const listing = await megaApi(folder.handle, { a: 'f', c: 1, ca: 1, r: 1 });
   const nodes = MEGA.decryptListing(listing, folder.keyB64);
+  // A wrong key decrypts nothing (attributes fail their MEGA{ check).
+  if ((listing?.f || []).length && !nodes.length) throw new Error('wrong-key');
   const entry = { at: Date.now(), files: MEGA.buildIndex(nodes), fonts: MEGA.buildFontIndex(nodes) };
   await chrome.storage.local.set({ [key]: entry });
   return entry;
@@ -206,6 +222,7 @@ async function megaIndex(folder, refresh) {
   return (await megaListing(folder, refresh)).files;
 }
 
+const MEGA_FILE_CACHE_MAX = 600;   // files (~fonts of 30–60 series)
 // Download + AES-CTR decrypt one indexed file.  `cache`: keep the plaintext in
 // Cache Storage (fonts — reused across episodes of a series).
 async function megaFileBytes(folder, file, cache) {
@@ -223,7 +240,14 @@ async function megaFileBytes(folder, file, cache) {
   const k32 = Uint8Array.from(atob(file.k), c => c.charCodeAt(0));
   const key = await crypto.subtle.importKey('raw', MEGA.fileAesKey(k32), 'AES-CTR', false, ['decrypt']);
   const bytes = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-CTR', counter: MEGA.fileCtrIv(k32), length: 64 }, key, enc));
-  if (store) { try { await store.put(url, new Response(bytes)); } catch (_) {} }
+  if (store) {
+    try {
+      await store.put(url, new Response(bytes));
+      // FIFO cap (keys() is insertion order): fonts of the last few dozen series.
+      const keys = await store.keys();
+      for (const k of keys.slice(0, Math.max(0, keys.length - MEGA_FILE_CACHE_MAX))) await store.delete(k);
+    } catch (_) {}
+  }
   return bytes;
 }
 
@@ -290,8 +314,11 @@ async function megaFonts(payload) {
   if (missing().length) {
     const seen = new Set(cands.map(c => c.file.h));
     const extra = [];
+    // Only indexes already cached (a recent MEGA search): this pass is a
+    // bonus and must not list every group folder on each track activation.
     for (const f of folders.filter(f => !f.titles || f === src)) {
-      let L; try { L = await megaListing(f, false); } catch (_) { continue; }
+      let L; try { L = await megaListing(f, false, true); } catch (_) { continue; }
+      if (!L) continue;
       for (const file of L.fonts) {
         if (seen.has(file.h)) continue;
         const hint = MEGA.fontFileHint(file.name, missing());
@@ -356,9 +383,10 @@ async function megaSearch(payload) {
     }
   }
   // Keys stay in the SW — the page gets what it shows and what it sends back.
-  const results = MEGA.search(all, { title, episodes })
+  const hits = MEGA.search(all, { title, episodes }, 41);
+  const results = hits.slice(0, 40)
     .map(({ h, dir, name, size, group, folder, score }) => ({ h, dir, name, size, group, folder, score }));
-  return { ok: true, results, errors, folders: folders.length };
+  return { ok: true, results, truncated: hits.length > 40, errors, folders: folders.length };
 }
 
 async function megaDownload(payload) {

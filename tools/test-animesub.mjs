@@ -107,6 +107,14 @@ for (const kind of ['stored', 'deflate', 'lzma']) {
   ok(`${kind}: Polish letters intact`, text.includes('Zażółć gęślą jaźń') && text.includes('ŹDŹBŁO'));
 }
 {
+  // A lying declared size stops the inflate early (deflate-bomb guard).
+  const u8 = FX('archive-deflate.zip');
+  const [e] = ZIP.listEntries(u8);
+  let msg = '';
+  try { await ZIP.extract(u8, { ...e, size: 10 }); } catch (err) { msg = err.message; }
+  eq('deflate: output capped at declared size', msg, 'ZIP entry larger than declared');
+}
+{
   let threw = false;
   try { ZIP.listEntries(FX('download-security-error.html')); } catch (_) { threw = true; }
   ok('HTML is rejected as non-ZIP', threw);
@@ -323,6 +331,11 @@ section('mega');
 // ── Group fonts ────────────────────────────────────────────────────────────
 section('fonts');
 {
+  {
+    const MGb = globalThis.CRSubFix.mega;
+    const big = new Uint8Array(200000).map((_, i) => i * 7 & 255);
+    eq('b64Encode chunked = Buffer', MGb.b64Encode(big), Buffer.from(big).toString('base64'));
+  }
   const FN = globalThis.CRSubFix.fontNames;
   const MG = globalThis.CRSubFix.mega;
   // Synthetic sfnt: 'name' (ids 1, 4 on Windows; 6 on Mac) + 'OS/2'.

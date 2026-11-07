@@ -249,9 +249,11 @@
     if (!req || key === groupFontReqKey || !extensionAlive()) return;
     groupFontReqKey = key;
     let res;
+    // A failed request un-latches, so the next activation of this track retries.
+    const unlatch = () => { if (groupFontReqKey === key) groupFontReqKey = null; };
     try { res = await chrome.runtime.sendMessage({ type: MSG.MEGA_FONTS, payload: req }); }
-    catch (e) { if (!isCtxDead(e)) console.warn('[CR Sub Fix] group fonts failed', e); return; }
-    if (!res || !res.ok) { console.warn('[CR Sub Fix] group fonts:', res && res.error); return; }
+    catch (e) { unlatch(); if (!isCtxDead(e)) console.warn('[CR Sub Fix] group fonts failed', e); return; }
+    if (!res || !res.ok) { unlatch(); console.warn('[CR Sub Fix] group fonts:', res && res.error); return; }
     let added = 0;
     for (const f of res.fonts || []) {
       if (groupFonts.has(f.h)) continue;

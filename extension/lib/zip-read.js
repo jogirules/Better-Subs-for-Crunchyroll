@@ -89,10 +89,24 @@
     return u8.subarray(start, start + e.compSize);
   }
 
-  async function inflateRaw(bytes) {
+  // Stops reading once the output passes `limit` (the entry's declared size):
+  // a lying size must not let a deflate bomb expand in memory.
+  async function inflateRaw(bytes, limit) {
     const ds = new DecompressionStream('deflate-raw');
-    const stream = new Blob([bytes]).stream().pipeThrough(ds);
-    return new Uint8Array(await new Response(stream).arrayBuffer());
+    const reader = new Blob([bytes]).stream().pipeThrough(ds).getReader();
+    const chunks = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > limit) { try { await reader.cancel(); } catch (_) {} throw new Error('ZIP entry larger than declared'); }
+      chunks.push(value);
+    }
+    const out = new Uint8Array(total);
+    let o = 0;
+    for (const c of chunks) { out.set(c, o); o += c.length; }
+    return out;
   }
 
   // ZIP's LZMA entry = [ver major, ver minor, propsSize u16 LE, props(5), raw
@@ -121,7 +135,7 @@
     const data = entryData(u8, e);
     let out;
     if (e.method === 0)       out = data.slice();
-    else if (e.method === 8)  out = await inflateRaw(data);
+    else if (e.method === 8)  out = await inflateRaw(data, e.size);
     else if (e.method === 14) out = unlzma(data, e.size);
     else throw new Error('unsupported ZIP compression method ' + e.method);
     if (out.length !== e.size) throw new Error(`ZIP size mismatch (${out.length} ≠ ${e.size})`);
