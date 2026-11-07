@@ -64,7 +64,7 @@ powrót do odcinka (wybór i synchro zostają). Diagnostyka: konsola strony (F12
 ## Dostrajanie synchronizacji (wydania TV, BD, inne fps)
 
 Napisy robione pod SubsPlease/Erai-raws/CR zwykle pasują od razu — to zgrania z Crunchyroll.
-Rozszerzenie próbuje też samo dopasować czas do angielskich napisów CR (dopasowanie po
+Rozszerzenie próbuje też samo dopasować czas do polskich napisów CR, jeśli odcinek je ma (dopasowanie po
 treści; komunikat po sukcesie). Gdy dalej się rozjeżdża, ustal rodzaj błędu:
 
 - **Stałe przesunięcie** (cały czas o tyle samo za wcześnie / za późno): wydanie TV miało
