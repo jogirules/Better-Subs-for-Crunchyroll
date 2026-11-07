@@ -27,7 +27,10 @@
 
   // Group folders shipped by default — the "all subtitles" folders the groups
   // themselves link from their Discord/website.  More can be added by the user.
+  // Order = tie-break order in results (the user's favourite group first).
   const DEFAULT_FOLDERS = [
+    // Shisha Subs: "Suby" folder pinned on their Discord (#ogólny), 2026-11-07.
+    { group: 'Shisha',    link: 'https://mega.nz/folder/JOBiUJKZ#RuIjBCN-Ha6vxksbKkCf0w' },
     { group: 'FrixySubs', link: 'https://mega.nz/folder/KQ00iCLb#0jW1zZcli8N-EUtbZszXYw' },
     { group: 'FujiSubs',  link: 'https://mega.nz/folder/U3ZBTZoZ#wJZumsXp5bzLXc6Hef5PXQ' },
   ];
@@ -120,8 +123,12 @@
       .replace(/\b(\d+)(?:st|nd|rd|th)\s+season\b/g, 'season $1')
       .replace(/\bs(\d{1,2})(?=e\d|\b)/g, ' season $1 ')
       .replace(/\bseason\s*0*(\d+)/g, 'season $1')
-      .split(/[^a-z0-9]+/).filter(Boolean);
+      .split(/[^a-z0-9]+/).filter(Boolean)
+      // Roman season numerals ("Mushoku Tensei III", Shisha's folders).  Not
+      // "x"/"v"/"i": those are words too ("Spy x Family").
+      .flatMap((w) => ROMAN[w] ? ['season', String(ROMAN[w])] : [w]);
   }
+  const ROMAN = { ii: 2, iii: 3, iv: 4, vi: 6, vii: 7, viii: 8, ix: 9 };
   function seasonOf(ws) {
     const i = ws.indexOf('season');
     return i >= 0 && /^\d+$/.test(ws[i + 1] || '') ? +ws[i + 1] : null;
@@ -145,6 +152,20 @@
   //   file name; a different explicit season excludes the file; with episodes
   //   given, the file name must carry one of them.
   function search(index, { title, episodes } = {}, limit = 40) {
+    const hits = searchStrict(index, title, episodes, limit);
+    if (hits.length) return hits;
+    // Groups shorten long titles: "Mushoku Tensei: Isekai Ittara Honki Dasu
+    // Season 3" is filed as "Mushoku Tensei III".  Retry with the part before
+    // the colon / dash (plus the season), if that part is specific enough.
+    const m = /^(.+?)\s*[:：]|^(.+?)\s+[-–]\s/.exec(String(title || ''));
+    const head = m && (m[1] || m[2]);
+    if (!head) return hits;
+    const hw = words(head);
+    if (hw.length < 2 && head.replace(/[^a-z0-9]/gi, '').length < 5) return hits;
+    const season = seasonOf(words(title));
+    return searchStrict(index, head + (season && !seasonOf(hw) ? ` season ${season}` : ''), episodes, limit);
+  }
+  function searchStrict(index, title, episodes, limit) {
     const tw = words(title);
     const season = seasonOf(tw);
     const core = tw.filter((w, i) => w !== 'season' && !(tw[i - 1] === 'season'));
@@ -168,7 +189,7 @@
       if (/\.(ass|ssa)$/i.test(f.name)) score += 0.5;
       hits.push({ ...f, score });
     }
-    hits.sort((a, b) => b.score - a.score || (a.dir + a.name).localeCompare(b.dir + b.name));
+    hits.sort((a, b) => b.score - a.score || (a.order ?? 0) - (b.order ?? 0) || (a.dir + a.name).localeCompare(b.dir + b.name));
     return hits.slice(0, limit);
   }
 

@@ -196,9 +196,9 @@ async function megaSearch(payload) {
   const episodes = (payload.episodes || []).map(n => parseInt(n, 10)).filter(n => n > 0);
   const folders = await megaFolders();
   const all = [], errors = [];
-  for (const f of folders) {
+  for (const [order, f] of folders.entries()) {
     try {
-      for (const file of await megaIndex(f, !!payload.refresh)) all.push({ ...file, group: f.group, folder: f.handle });
+      for (const file of await megaIndex(f, !!payload.refresh)) all.push({ ...file, group: f.group, folder: f.handle, order });
     } catch (e) {
       errors.push(`${f.group}: ${e && e.message}`);
     }

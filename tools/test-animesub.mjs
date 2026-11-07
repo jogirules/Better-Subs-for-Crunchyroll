@@ -289,6 +289,19 @@ section('mega');
   eq('season 1 excludes season 3 folder', names(MG.search(idx, { title: 'Kusuriya no Hitorigoto', episodes: [5] })), ['f3']);
   eq('no episodes = whole season', names(MG.search(idx, { title: 'kusuriya no hitorigoto s3' })), ['f1', 'f2']);
   eq('unknown title', MG.search(idx, { title: 'Frieren', episodes: [1] }).length, 0);
+  // Shisha-style layout: roman season numerals, shortened titles.
+  const sh = [
+    { h: 's1', dir: 'Suby/Mushoku Tensei/Mushoku Tensei III', name: '[shisha] Mushoku Tensei III - 08.ass' },
+    { h: 's2', dir: 'Suby/Mushoku Tensei/Mushoku Tensei II', name: '[shisha] Mushoku Tensei II - 08.ass' },
+    { h: 's3', dir: 'Suby/Spy x Family', name: '[shisha] Spy x Family - 08.ass' },
+    { h: 's4', dir: 'Suby/Re：Zero kara Hajimeru Isekai Seikatsu/Re：Zero kara Hajimeru Isekai Seikatsu IV', name: '[shisha] Re Zero IV - 03.ass' },
+  ];
+  eq('roman III + shortened title', names(MG.search(sh, { title: 'Mushoku Tensei: Isekai Ittara Honki Dasu Season 3', episodes: [8] })), ['s1']);
+  eq('roman II', names(MG.search(sh, { title: 'Mushoku Tensei: Isekai Ittara Honki Dasu 2nd Season', episodes: [8] })), ['s2']);
+  eq('x is not a numeral', names(MG.search(sh, { title: 'SPY x FAMILY', episodes: [8] })), ['s3']);
+  eq('full-width colon, 4th season', names(MG.search(sh, { title: 'Re:Zero kara Hajimeru Isekai Seikatsu 4th Season', episodes: [3] })), ['s4']);
+  eq('tie-break by folder order', names(MG.search([{ h: 'b', dir: 'A', name: 'Spy x Family - 08.ass', order: 1 }, { h: 'a', dir: 'B', name: 'Spy x Family - 08.ass', order: 0 }], { title: 'Spy x Family', episodes: [8] })), ['a', 'b']);
+  eq('short head not used ("Re")', MG.search(sh, { title: 'Re:Monster', episodes: [3] }).length, 0);
 
   // File body: AES-CTR under the folded key / nonce (WebCrypto, as in the SW).
   const k32 = Uint8Array.from(atob(idx[0].k), (c) => c.charCodeAt(0));

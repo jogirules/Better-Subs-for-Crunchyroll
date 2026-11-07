@@ -48,7 +48,7 @@ workera giną z błędem „message port closed”).
 ### Foldery MEGA grup
 
 W panelu AnimeSub przycisk **📁 Foldery MEGA** (albo ▾ → Manage → **📁 Szukaj w folderach
-MEGA grup…**) przeszukuje publiczne foldery FrixySubs i FujiSubs po nazwach plików. Pola:
+MEGA grup…**) przeszukuje publiczne foldery Shisha Subs, FrixySubs i FujiSubs po nazwach plików (przy równym dopasowaniu Shisha jest pierwsza). Pola:
 tytuł (romaji, jak na AniList) i numery odcinka (np. `5, 53` — w sezonie i absolutny; puste =
 cały sezon). Panel sam wpisuje tytuł i numery z Crunchyroll/AniList. Pierwsze wyszukiwanie
 pobiera listę plików folderu (kilka sekund), potem przez 12 h szuka lokalnie (↻ odświeża).
@@ -69,6 +69,7 @@ Inne źródła: ▾ → Manage → **＋ Load subtitle file / ZIP…** albo prze
 | [Kusuriya E53](https://www.crunchyroll.com/watch/GE00384331JAJP/the-white-snake-immortal) | `Kusuriya no Hitorigoto 3rd Season ep05` | FrixySubs (numeracja absolutna CR → sezonowa) |
 | [Kusuriya E29](https://www.crunchyroll.com/watch/GEVUW3VGJ/moon-fairy) | `Kusuriya no Hitorigoto 2nd Season ep05` | FrixySubs (opisane jako TMPlayer, w środku ASS) |
 | Kusuriya E53 → 📁 Foldery MEGA | `Kusuriya no Hitorigoto 3rd Season`, odc. `5, 53` | `[FrixySubs] Kusuriya no Hitorigoto - S03E05 (53).ass` |
+| Mushoku Tensei S3 E8 → 📁 Foldery MEGA | `Mushoku Tensei: Isekai Ittara Honki Dasu Season 3`, odc. `8` | `[shisha] Mushoku Tensei S3 - 08.ass` (folder „Mushoku Tensei III”) |
 | Frieren S2 E1 → 📁 Foldery MEGA | `Sousou no Frieren 2nd Season`, odc. `1, …` | FujiSubs i FrixySubs (`Sousou no Frieren S2 - 01.ass`) |
 
 Sprawdź: polskie znaki (ąęłóśźżćń), brak podwójnych napisów, napisy w trybie pełnoekranowym,

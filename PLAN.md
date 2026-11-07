@@ -52,6 +52,9 @@ klucz po `#`, więc nie ma logowania ani tokenu. Protokół (sprawdzony): `POST 
 `[{a:'f',c:1,ca:1,r:1}]` → węzły z atrybutami AES-CBC i kluczami AES-ECB pod kluczem folderu;
 `[{a:'g',g:1,ssl:1,n:<plik>}]` → URL na `gfs*.userstorage.mega.co.nz` (CORS `*`), treść AES-CTR.
 FrixySubs: 9722 węzły / ~4100 plików napisów w jednym żądaniu (0,3 s), FujiSubs ~900.
+Shisha Subs: folder „Suby” przypięty w #ogólny na ich Discordzie (10702 węzły, ~3000 plików, aktualny),
+sezony rzymskimi liczbami i skrócone tytuły → wyszukiwanie składa II–IX do „season N” i ponawia
+z częścią tytułu przed dwukropkiem.
 Kod: `lib/mega.js` (czyste funkcje + testy), `background.js` (sieć, cache, WebCrypto),
 panel „📁 Foldery MEGA” w `interceptor.js`. Wariant Discord poniżej zostaje jako zapis decyzji.
 
