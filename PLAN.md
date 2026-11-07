@@ -56,7 +56,7 @@ Shisha Subs: folder „Suby” przypięty w #ogólny na ich Discordzie (10702 w�
 sezony rzymskimi liczbami i skrócone tytuły → wyszukiwanie składa II–IX do „season N” i ponawia
 z częścią tytułu przed dwukropkiem.
 Przegląd Discordów grup (2026-11-07): poza Shishą, FrixySubs i FujiSubs nikt nie ma folderu zbiorczego.
-Foldery per seria: Max-Subs (2 z 5 niepuste — w indeksie `titles`), Fusoku (też na AnimeSub), Shine (2022),
+Foldery per seria (indeks `titles`): Max-Subs 2 z 5 niepustych, Fusoku 48 z 127 (z bloga, reszta to wideo); Shine — wszystkie puste/usunięte,
 FAVA (zawieszona 01.2025). Maou, Mirai, Kitsune: tylko wideo z napisami. Nyan: brak dostępu do kanałów.
 Kod: `lib/mega.js` (czyste funkcje + testy), `background.js` (sieć, cache, WebCrypto),
 panel „📁 Foldery MEGA” w `interceptor.js`. Wariant Discord poniżej zostaje jako zapis decyzji.

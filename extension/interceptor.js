@@ -1241,7 +1241,7 @@
       for (const f of folders || []) {
         const chip = document.createElement('span');
         chip.style.cssText = `border:1px solid ${THEME.panelEdge};border-radius:10px;padding:1px 7px;color:${THEME.text};`;
-        chip.textContent = f.series ? `${f.group} (${f.series} ${f.series === 1 ? 'seria' : 'serie'})` : f.group;
+        chip.textContent = f.series ? `${f.group} (${f.series} ${f.series === 1 ? 'seria' : (f.series % 10 >= 2 && f.series % 10 <= 4 && (f.series % 100 < 10 || f.series % 100 >= 20) ? 'serie' : 'serii')})` : f.group;
         if (f.series) chip.title = 'Foldery pojedynczych serii — przeszukiwane tylko, gdy tytuł pasuje';
         if (!f.builtin) {
           const x = document.createElement('span');
