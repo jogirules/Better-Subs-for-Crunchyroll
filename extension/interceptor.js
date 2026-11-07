@@ -652,6 +652,15 @@
     cur.setActiveSource(locale);
     if (!isCustomId(locale)) {
       try { localStorage.setItem(LOCALE_PREF_KEY, locale); } catch (_) {}
+    } else if (isEnabled() && !isHideOfficialSubs()) {
+      // Fork (AnimeSub/Discord/file): the current CR player burns its own
+      // subtitles into the video for the account's language, so an external
+      // track would be drawn over a second, burned-in one.  Picking a custom
+      // source therefore switches on the existing hide-official setting, whose
+      // handler moves to the subtitle-free stream (live, or via a reload toast).
+      // It stays a normal user setting: ▾ Show → "Crunchyroll's own subtitles".
+      log.info('Custom source selected — enabling hide-official to avoid burned-in duplicates.');
+      saveSetting('hideOfficialSubs', true);
     }
     cur.clearCues();
     renderer.invalidate();
