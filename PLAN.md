@@ -23,8 +23,9 @@
 
 - Wtyczka `external_plugins/discord` (claude-plugins-official) to most **bot ↔ sesja
   Claude Code**. Bot widzi tylko serwery, na które dodał go *administrator serwera*,
-  i tylko kanały włączone w jego konfiguracji; API wyszukiwania nie jest dostępne dla
-  botów (`fetch_messages` ≤ 100 wiadomości). Na serwer FrixySubs/Fumetsu itp. bota
+  i tylko kanały włączone w jego konfiguracji; wtyczka nie udostępnia wyszukiwania
+  (`fetch_messages` ≤ 100 wiadomości), a endpoint Search Guild Messages z dokumentacji
+  Discorda i tak działa tylko na serwerze, na którym bot jest. Na serwer FrixySubs/Fumetsu itp. bota
   nie dodamy bez zgody ich administracji → **nie rozwiązuje problemu źródła**.
   Dodatkowo działa przez Claude Code, a nie w przeglądarce podczas oglądania.
 - Automatyzacja zwykłego konta (self-bot, token użytkownika) łamie regulamin
