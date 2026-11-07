@@ -29,6 +29,11 @@
 
   const SETTINGS = self.CRSubFix.settings;
   const { ATTR, STATUS, MSG, POST } = self.CRSubFix.protocol;
+  // Fork: MAIN-world RPC methods executed by the SW (host permissions + cookie jar live there).
+  const SW_METHODS = {
+    animesubSearch: MSG.AS_SEARCH, animesubDownload: MSG.AS_DOWNLOAD, animesubTitle: MSG.AS_TITLE,
+    megaSearch: MSG.MEGA_SEARCH, megaDownload: MSG.MEGA_DOWNLOAD, megaFolders: MSG.MEGA_FOLDERS,
+  };
 
   // CR's framework strips our custom data-* attribute off <html> during
   // hydration, which would null the toggle token and make us reject every
@@ -140,10 +145,10 @@
       } catch (e) {
         reply({ ok: false, error: String(e && e.message) });
       }
-    } else if (data.method === 'animesubSearch' || data.method === 'animesubDownload' || data.method === 'animesubTitle') {
+    } else if (Object.hasOwn(SW_METHODS, data.method)) {
       // Fork: AnimeSub.info search / download and the AniList title lookup,
       // executed by the SW (host permissions + cookie jar live there).
-      const type = { animesubSearch: MSG.AS_SEARCH, animesubDownload: MSG.AS_DOWNLOAD, animesubTitle: MSG.AS_TITLE }[data.method];
+      const type = SW_METHODS[data.method];
       try {
         chrome.runtime.sendMessage({ type, payload: data.payload }, (res) => {
           const err = chrome.runtime.lastError;

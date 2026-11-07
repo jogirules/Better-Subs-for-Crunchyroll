@@ -17,7 +17,8 @@
 | 5 | Tytuł/odcinek ze strony CR + AniList (romaji, cache) | ✅ (CR cms/objects + AniList; panel do sprawdzenia na koncie) |
 | 6 | Pamięć per odcinek: metadane źródła w rekordzie (`site`, `id`, autor) | ✅ kod (wybór źródła per odcinek, pick AnimeSub 1 rok + synchro, „Pobierz ponownie”); do sprawdzenia na koncie |
 | 7 | Instrukcja testów (Kusuriya S3, Frieren) i strojenia synchronizacji | ✅ ANIMESUB.md: użycie, scenariusz testowy, synchro TV/BD/fps |
-| 8 | **Discord: „Szukaj w Discordzie” z odtwarzacza CR → karta Discorda z wpisanym wyszukiwaniem → „Wyślij do Better Subs” przy załączniku → napisy same trafiają do odcinka**; id `custom:discord` | nowy, po decyzji |
+| 8 | **Foldery MEGA grup** (zamiast Discorda): publiczne foldery „wszystkie napisy” FrixySubs i FujiSubs + własne linki; lista plików odszyfrowana w przeglądarce, cache 12 h, wyszukiwanie po nazwie pliku, pobranie i odszyfrowanie AES-CTR jednego pliku; id `custom:mega` | ✅ SW sprawdzony w Chromium (szukanie 0,5 s, z cache 17 ms, ASS 82 kB w 0,25 s); panel do sprawdzenia na koncie |
+| 9 | Czcionki z folderów `Czcionki/` grup dla libass; Discord (wariant B) tylko jeśli MEGA nie wystarczy | później |
 
 ## Discord — ustalenia i granice
 
@@ -43,7 +44,18 @@
   pliku Frieren pobranego z AnimeSub). Lista jest sprzed 3–4 lat; część grup mogła
   zniknąć — do sprawdzenia, zanim zbudujemy coś pod konkretną grupę.
 
-## Etap 8 — przepływ (wersja z 2026-11-07, po weryfikacji)
+## Etap 8 — wybrany wariant: foldery MEGA (2026-11-07)
+
+Test na Discordzie: kanały wydań grup zawierają linki i obrazki, nie załączniki z napisami;
+pliki leżą w publicznych folderach MEGA, linkowanych przez grupy. Link do folderu niesie
+klucz po `#`, więc nie ma logowania ani tokenu. Protokół (sprawdzony): `POST g.api.mega.co.nz/cs?n=<folder>`
+`[{a:'f',c:1,ca:1,r:1}]` → węzły z atrybutami AES-CBC i kluczami AES-ECB pod kluczem folderu;
+`[{a:'g',g:1,ssl:1,n:<plik>}]` → URL na `gfs*.userstorage.mega.co.nz` (CORS `*`), treść AES-CTR.
+FrixySubs: 9722 węzły / ~4100 plików napisów w jednym żądaniu (0,3 s), FujiSubs ~900.
+Kod: `lib/mega.js` (czyste funkcje + testy), `background.js` (sieć, cache, WebCrypto),
+panel „📁 Foldery MEGA” w `interceptor.js`. Wariant Discord poniżej zostaje jako zapis decyzji.
+
+## Etap 8 (odrzucony wariant) — Discord, przepływ z 2026-11-07
 
 Fakty: Discord ma linki do serwera/kanału (`discord.com/channels/<serwer>/<kanał>`),
 ale **nie znalazłem udokumentowanego linku z gotowym wyszukiwaniem**. Za to jego

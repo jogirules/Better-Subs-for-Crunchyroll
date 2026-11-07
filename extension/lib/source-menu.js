@@ -51,7 +51,7 @@
     getEpisode, isOverlayActive, localeHasContent,
     localeLabels = {},
     onSelectLocale, onTurnOff,
-    onSelectCustom, onLoadFile, onSearchAnimesub, onRemoveCustom, onAdjustSync, onExport,
+    onSelectCustom, onLoadFile, onSearchAnimesub, onSearchMega, onRemoveCustom, onAdjustSync, onExport,
     onAdjustTiming, getAdjustTimingAction,
     onTranslate, getTranslateAction, onClearMt, getClearMtAction,
     onCancelTranslate, getCancelAction, onMtSettings, getMtSettingsAction,
@@ -454,7 +454,7 @@
     // effectively always offered, so this is true whenever that callback exists;
     // the per-source verbs (sync/export) and MT actions show contextually inside.
     function hasManageActions() {
-      return !!(onLoadFile || onSearchAnimesub || onTranslate || onMtSettings || onClearMt);
+      return !!(onLoadFile || onSearchAnimesub || onSearchMega || onTranslate || onMtSettings || onClearMt);
     }
 
     function buildContent(menuEl) {
@@ -595,6 +595,9 @@
         if (onSearchAnimesub) {
           menuEl.appendChild(makeActionRow('🔎 Szukaj na AnimeSub…', () => { close(); onSearchAnimesub(); }));
         }
+        if (onSearchMega) {
+          menuEl.appendChild(makeActionRow('📁 Szukaj w folderach MEGA grup…', () => { close(); onSearchMega(); }));
+        }
         if (onLoadFile) {
           menuEl.appendChild(makeActionRow('＋ Load subtitle file / ZIP…', () => { close(); onLoadFile(); }));
         }
@@ -666,7 +669,7 @@
       // Custom sources (uploads / MT) are selectable languages too — same list.
       for (const cs of customs) {
         const isActive = on && (curLocale === cs.id);
-        const badge    = cs.kind === 'mt' ? 'machine' : cs.origin?.site === 'animesub' ? 'AnimeSub' : 'file';
+        const badge    = cs.kind === 'mt' ? 'machine' : cs.origin?.site === 'animesub' ? 'AnimeSub' : cs.origin?.site === 'mega' ? 'MEGA' : 'file';
         list.appendChild(makeCustomRow(cs.label || cs.id, isActive, badge, () => {
           close(); onSelectCustom?.(cs.id);
         }, () => {
@@ -690,10 +693,14 @@
       // (c2) Fork: Polish fansubs — the main reason this fork exists, so it sits
       // in the main view rather than one level down under "Manage".
       if (onSearchAnimesub) {
-        const cur = curCustom?.origin?.site === 'animesub' ? curCustom : customs.find((c) => c.origin?.site === 'animesub');
+        const fansub = (c) => c?.origin?.site === 'animesub' || c?.origin?.site === 'mega';
+        const cur = fansub(curCustom) ? curCustom : customs.find(fansub);
+        const siteName = (c) => c.origin.site === 'mega' ? 'MEGA' : 'AnimeSub';
+        // Opens the panel of the source in use (AnimeSub by default).
+        const open = cur?.origin?.site === 'mega' && onSearchMega ? onSearchMega : onSearchAnimesub;
         menuEl.appendChild(makeSubtextRow('🔎', 'Szukaj napisów PL',
-          cur ? `AnimeSub · ${cur.origin.author || cur.label}` : 'AnimeSub.info — wyszukaj i wczytaj',
-          () => { close(); onSearchAnimesub(); }, true));
+          cur ? `${siteName(cur)} · ${cur.origin.author || cur.label}` : 'AnimeSub.info i foldery MEGA grup',
+          () => { close(); open(); }, true));
       }
 
       // (d) Show on screen + Manage sources — a compact two-up row.

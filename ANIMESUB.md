@@ -45,6 +45,18 @@ workera giną z błędem „message port closed”).
 5. Wybór i ręczne synchro są pamiętane per odcinek. Po powrocie napisy włączają się same;
    po wygaśnięciu cache (30 dni) panel pokazuje „Pobierz ponownie”.
 
+### Foldery MEGA grup
+
+W panelu AnimeSub przycisk **📁 Foldery MEGA** (albo ▾ → Manage → **📁 Szukaj w folderach
+MEGA grup…**) przeszukuje publiczne foldery FrixySubs i FujiSubs po nazwach plików. Pola:
+tytuł (romaji, jak na AniList) i numery odcinka (np. `5, 53` — w sezonie i absolutny; puste =
+cały sezon). Panel sam wpisuje tytuł i numery z Crunchyroll/AniList. Pierwsze wyszukiwanie
+pobiera listę plików folderu (kilka sekund), potem przez 12 h szuka lokalnie (↻ odświeża).
+Pobierany jest tylko kliknięty plik; odszyfrowanie dzieje się w przeglądarce. **+ Dodaj link**
+dopisuje folder innej grupy (link `https://mega.nz/folder/…#klucz`; sprawdzany przed zapisem).
+Plakietka źródła: „MEGA”; wybór i synchro pamiętane per odcinek jak przy AnimeSub.
+Ograniczenie: czcionki grup (`Czcionki/`) nie są jeszcze wczytywane — libass użyje zastępczych.
+
 Inne źródła: ▾ → Manage → **＋ Load subtitle file / ZIP…** albo przeciągnij plik
 (.ass/.srt/.txt/.sub/.zip) na stronę odcinka.
 
@@ -56,6 +68,8 @@ Inne źródła: ▾ → Manage → **＋ Load subtitle file / ZIP…** albo prze
 | [Frieren S1 E1](https://www.crunchyroll.com/watch/G0DUND0K2/the-journeys-end) | `Sousou no Frieren ep01` | Fusoku Subs (LZMA, SubsPlease) |
 | [Kusuriya E53](https://www.crunchyroll.com/watch/GE00384331JAJP/the-white-snake-immortal) | `Kusuriya no Hitorigoto 3rd Season ep05` | FrixySubs (numeracja absolutna CR → sezonowa) |
 | [Kusuriya E29](https://www.crunchyroll.com/watch/GEVUW3VGJ/moon-fairy) | `Kusuriya no Hitorigoto 2nd Season ep05` | FrixySubs (opisane jako TMPlayer, w środku ASS) |
+| Kusuriya E53 → 📁 Foldery MEGA | `Kusuriya no Hitorigoto 3rd Season`, odc. `5, 53` | `[FrixySubs] Kusuriya no Hitorigoto - S03E05 (53).ass` |
+| Frieren S2 E1 → 📁 Foldery MEGA | `Sousou no Frieren 2nd Season`, odc. `1, …` | FujiSubs i FrixySubs (`Sousou no Frieren S2 - 01.ass`) |
 
 Sprawdź: polskie znaki (ąęłóśźżćń), brak podwójnych napisów, napisy w trybie pełnoekranowym,
 powrót do odcinka (wybór i synchro zostają). Diagnostyka: konsola strony (F12), linie

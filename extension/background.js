@@ -11,10 +11,11 @@
  *    optional_host_permissions the popup requests when the user enables MT.
  */
 
-importScripts('lib/protocol.js', 'lib/animesub.js', 'lib/title-map.js');
+importScripts('lib/protocol.js', 'lib/animesub.js', 'lib/title-map.js', 'lib/vendor/aes.js', 'lib/mega.js');
 const { MSG } = self.CRSubFix.protocol;
 const AS = self.CRSubFix.animesub;
 const TM = self.CRSubFix.titleMap;
+const MEGA = self.CRSubFix.mega;
 
 // ── AnimeSub.info (fork) ───────────────────────────────────────────────────
 // Every request is user-initiated (a click in the player).  One shared queue
@@ -142,10 +143,118 @@ async function resolveTitle(payload) {
   return { ok: true, ...value };
 }
 
+// ── Public MEGA folders of fansub groups (fork) ────────────────────────────
+// A folder listing is one API call (FrixySubs: ~10k nodes, ~0.3 s); the
+// decrypted subtitle index is cached per folder for 12 h, so a search is
+// local and only a download touches MEGA again.  Requests are user-initiated
+// and serialized (same politeness rule as AnimeSub).
+const MEGA_INDEX_PREFIX = 'megaIndex_';
+const MEGA_INDEX_TTL_MS = 12 * 3600 * 1000;
+const MEGA_FOLDERS_KEY = 'megaFolders';          // user-added [{group, link}]
+const MEGA_MAX_FILE = 20 * 1024 * 1024;
+let megaQueue = Promise.resolve();
+let megaSeq = Math.floor(Math.random() * 1e6);
+function megaApi(handle, cmd) {
+  const run = async () => {
+    const resp = await fetch(`${MEGA.API}?id=${++megaSeq}&n=${handle}`, {
+      method: 'POST', body: JSON.stringify([cmd]), signal: AbortSignal.timeout(20000),
+    });
+    if (!resp.ok) throw new Error('MEGA HTTP ' + resp.status);
+    const body = await resp.json();
+    const r = Array.isArray(body) ? body[0] : body;
+    if (typeof r === 'number') throw new Error('MEGA error ' + r);   // e.g. -9 not found, -3 retry
+    return r;
+  };
+  const p = megaQueue.then(run, run);
+  megaQueue = p.catch(() => {});
+  return p;
+}
+
+async function megaFolders() {
+  const { [MEGA_FOLDERS_KEY]: extra = [] } = await chrome.storage.local.get(MEGA_FOLDERS_KEY);
+  const seen = new Set();
+  return [...MEGA.DEFAULT_FOLDERS.map(f => ({ ...f, builtin: true })), ...extra]
+    .map(f => ({ ...f, ...MEGA.parseFolderLink(f.link) }))
+    .filter(f => f.handle && !seen.has(f.handle) && seen.add(f.handle));
+}
+
+async function megaIndex(folder, refresh) {
+  const key = MEGA_INDEX_PREFIX + folder.handle;
+  if (!refresh) {
+    const { [key]: hit } = await chrome.storage.local.get(key);
+    if (hit && Date.now() - hit.at < MEGA_INDEX_TTL_MS) return hit.files;
+  }
+  const listing = await megaApi(folder.handle, { a: 'f', c: 1, ca: 1, r: 1 });
+  const files = MEGA.buildIndex(MEGA.decryptListing(listing, folder.keyB64));
+  await chrome.storage.local.set({ [key]: { at: Date.now(), files } });
+  return files;
+}
+
+async function megaSearch(payload) {
+  const title = String(payload?.title || '').trim();
+  if (!title) return { ok: false, error: 'empty-query' };
+  const episodes = (payload.episodes || []).map(n => parseInt(n, 10)).filter(n => n > 0);
+  const folders = await megaFolders();
+  const all = [], errors = [];
+  for (const f of folders) {
+    try {
+      for (const file of await megaIndex(f, !!payload.refresh)) all.push({ ...file, group: f.group, folder: f.handle });
+    } catch (e) {
+      errors.push(`${f.group}: ${e && e.message}`);
+    }
+  }
+  // Keys stay in the SW — the page gets what it shows and what it sends back.
+  const results = MEGA.search(all, { title, episodes })
+    .map(({ h, dir, name, size, group, folder, score }) => ({ h, dir, name, size, group, folder, score }));
+  return { ok: true, results, errors, folders: folders.length };
+}
+
+async function megaDownload(payload) {
+  const folder = (await megaFolders()).find(f => f.handle === payload?.folder);
+  if (!folder) return { ok: false, error: 'unknown-folder' };
+  const file = (await megaIndex(folder, false)).find(f => f.h === payload.h);
+  if (!file) return { ok: false, error: 'not-in-index' };
+  if (file.size > MEGA_MAX_FILE) return { ok: false, error: 'too-large' };
+  const g = await megaApi(folder.handle, { a: 'g', g: 1, ssl: 1, n: file.h });
+  if (!g || !g.g) return { ok: false, error: 'no-download-url' };
+  const resp = await fetch(g.g, { signal: AbortSignal.timeout(30000) });
+  if (!resp.ok) return { ok: false, error: 'MEGA HTTP ' + resp.status };
+  const enc = new Uint8Array(await resp.arrayBuffer());
+  const k32 = Uint8Array.from(atob(file.k), c => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey('raw', MEGA.fileAesKey(k32), 'AES-CTR', false, ['decrypt']);
+  const bytes = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-CTR', counter: MEGA.fileCtrIv(k32), length: 64 }, key, enc));
+  return { ok: true, filename: file.name, base64: MEGA.b64Encode(bytes), size: bytes.length, group: folder.group, dir: file.dir };
+}
+
+// list | add {link, group?} | remove {handle}
+async function megaFoldersMsg(payload) {
+  const op = payload?.op || 'list';
+  const { [MEGA_FOLDERS_KEY]: extra = [] } = await chrome.storage.local.get(MEGA_FOLDERS_KEY);
+  if (op === 'add') {
+    const parsed = MEGA.parseFolderLink(payload.link);
+    if (!parsed) return { ok: false, error: 'bad-link' };
+    if ((await megaFolders()).some(f => f.handle === parsed.handle)) return { ok: false, error: 'exists' };
+    const group = String(payload.group || '').trim().slice(0, 40) || parsed.handle;
+    // Validate before saving: the key must decrypt the listing.
+    const files = await megaIndex({ ...parsed, group }, true);
+    extra.push({ group, link: `https://mega.nz/folder/${parsed.handle}#${parsed.keyB64}` });
+    await chrome.storage.local.set({ [MEGA_FOLDERS_KEY]: extra });
+    return { ok: true, files: files.length, folders: (await megaFolders()).map(({ group, handle, builtin }) => ({ group, handle, builtin: !!builtin })) };
+  }
+  if (op === 'remove') {
+    const keep = extra.filter(f => MEGA.parseFolderLink(f.link)?.handle !== payload.handle);
+    await chrome.storage.local.set({ [MEGA_FOLDERS_KEY]: keep });
+    await chrome.storage.local.remove(MEGA_INDEX_PREFIX + payload.handle);
+  }
+  return { ok: true, folders: (await megaFolders()).map(({ group, handle, builtin }) => ({ group, handle, builtin: !!builtin })) };
+}
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg || typeof msg !== 'object') return;
   const fn = msg.type === MSG.AS_SEARCH ? animesubSearch : msg.type === MSG.AS_DOWNLOAD ? animesubDownload
-           : msg.type === MSG.AS_TITLE ? resolveTitle : null;
+           : msg.type === MSG.AS_TITLE ? resolveTitle
+           : msg.type === MSG.MEGA_SEARCH ? megaSearch : msg.type === MSG.MEGA_DOWNLOAD ? megaDownload
+           : msg.type === MSG.MEGA_FOLDERS ? megaFoldersMsg : null;
   if (!fn) return;
   fn(msg.payload).then(sendResponse).catch(e => {
     const timedOut = e && (e.name === 'TimeoutError' || e.name === 'AbortError');

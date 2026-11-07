@@ -37,6 +37,8 @@ for (const p of [
   'extension/lib/custom-source.js',
   'extension/lib/sub-ingest.js',
   'extension/lib/title-map.js',
+  'extension/lib/vendor/aes.js',
+  'extension/lib/mega.js',
 ]) load(p);
 const { animesub: AS, zipRead: ZIP, legacySubs: LEG, textDecode: TD, customSource: CUSTOM, subIngest: ING, titleMap: TM } = globalThis.CRSubFix;
 const iso2 = (u8) => new TextDecoder('iso-8859-2').decode(u8);
@@ -239,6 +241,65 @@ section('title map');
   eq('firstTv', TM.firstTv(fr)?.title?.romaji, 'Sousou no Frieren');
   const q = AS.buildQuery(pick(ku, { seasonNumber: 3, airDate: meta.airDate }), TM.episodeForQuery(meta));
   eq('end to end query', q, 'Kusuriya no Hitorigoto 3rd Season ep05');
+}
+
+// ── MEGA group folders: link parsing, listing decryption, search ───────────
+// Synthetic folder (own random keys) encrypted the way MEGA does it.
+section('mega');
+{
+  const MG = globalThis.CRSubFix.mega, aesjs = globalThis.aesjs;
+  eq('folder link', MG.parseFolderLink('https://mega.nz/folder/KQ00iCLb#0jW1zZcli8N-EUtbZszXYw'), { handle: 'KQ00iCLb', keyB64: '0jW1zZcli8N-EUtbZszXYw' });
+  eq('legacy link', MG.parseFolderLink('https://mega.nz/#F!U3ZBTZoZ!wJZumsXp5bzLXc6Hef5PXQ')?.handle, 'U3ZBTZoZ');
+  eq('bad link', MG.parseFolderLink('https://mega.nz/file/abc'), null);
+
+  const rnd = (n, seed) => Uint8Array.from({ length: n }, (_, i) => (i * 37 + seed * 11 + 5) & 255);
+  const b64url = (u8) => MG.b64Encode(u8).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const fk = rnd(16, 1);
+  const enc = (key, name) => {
+    const t = new TextEncoder().encode('MEGA' + JSON.stringify({ n: name }));
+    const pad = new Uint8Array(Math.ceil(t.length / 16) * 16); pad.set(t);
+    return b64url(new aesjs.ModeOfOperation.cbc(key, new Uint8Array(16)).encrypt(pad));
+  };
+  const nodeKey = (k) => b64url(new aesjs.ModeOfOperation.ecb(fk).encrypt(k));
+  const nodes = [];
+  const dir = (h, p, name, seed) => { const k = rnd(16, seed); nodes.push({ h, p, t: 1, a: enc(k, name), k: `${'ROOT0000'}:${nodeKey(k)}` }); };
+  const file = (h, p, name, seed, s = 1000) => {
+    const k = rnd(32, seed);
+    // A second, foreign key part first — must be skipped.
+    nodes.push({ h, p, t: 0, s, a: enc(MG.fileAesKey(k), name), k: `OTHER000:${nodeKey(rnd(32, seed + 50))}/ROOT0000:${nodeKey(k)}` });
+  };
+  dir('R', '', 'SUBY', 2); dir('K', 'R', 'K', 3); dir('K3', 'K', 'Kusuriya no Hitorigoto Season 3', 4); dir('K1', 'K', 'Kusuriya no Hitorigoto', 5);
+  dir('F', 'K3', 'Czcionki', 6);
+  file('f1', 'K3', '[FrixySubs] Kusuriya no Hitorigoto - S03E05 (53).ass', 7);
+  file('f2', 'K3', '[FrixySubs] Kusuriya no Hitorigoto - S03E06 (54).ass', 8);
+  file('f3', 'K1', 'Kusuriya_no_Hitorigoto_05_1080p.ass', 9);
+  file('f4', 'K1', 'Kusuriya_no_Hitorigoto_2023_720p_x265.srt', 10);
+  file('f5', 'F', 'Arial.ttf', 11);
+  const listed = MG.decryptListing({ f: nodes }, b64url(fk));
+  eq('all nodes decrypted', listed.length, nodes.length);
+  const idx = MG.buildIndex(listed);
+  eq('index = subtitle files only', idx.map((f) => f.h), ['f1', 'f2', 'f3', 'f4']);
+  eq('index path', idx[0].dir, 'SUBY/K/Kusuriya no Hitorigoto Season 3');
+
+  eq('episode numbers S03E05 (53)', [...MG.episodeNumbers('[FrixySubs] Kusuriya no Hitorigoto - S03E05 (53).ass')].sort((a, b) => a - b), [5, 53]);
+  eq('episode numbers skip 1080p/2023/x265', [...MG.episodeNumbers('Kusuriya_no_Hitorigoto_2023_720p_x265.srt')], []);
+  const names = (r) => r.map((f) => f.h);
+  eq('season 3 ep 5', names(MG.search(idx, { title: 'Kusuriya no Hitorigoto 3rd Season', episodes: [5, 53] })), ['f1']);
+  eq('season 3 abs 54 only', names(MG.search(idx, { title: 'Kusuriya no Hitorigoto Season 3', episodes: [54] })), ['f2']);
+  eq('season 1 excludes season 3 folder', names(MG.search(idx, { title: 'Kusuriya no Hitorigoto', episodes: [5] })), ['f3']);
+  eq('no episodes = whole season', names(MG.search(idx, { title: 'kusuriya no hitorigoto s3' })), ['f1', 'f2']);
+  eq('unknown title', MG.search(idx, { title: 'Frieren', episodes: [1] }).length, 0);
+
+  // File body: AES-CTR under the folded key / nonce (WebCrypto, as in the SW).
+  const k32 = Uint8Array.from(atob(idx[0].k), (c) => c.charCodeAt(0));
+  const plain = new TextEncoder().encode('[Script Info]\nTitle: Kusuriya 05\n'.repeat(3));
+  const key = await crypto.subtle.importKey('raw', MG.fileAesKey(k32), 'AES-CTR', false, ['encrypt', 'decrypt']);
+  const algo = { name: 'AES-CTR', counter: MG.fileCtrIv(k32), length: 64 };
+  const back = new Uint8Array(await crypto.subtle.decrypt(algo, key, await crypto.subtle.encrypt(algo, key, plain)));
+  eq('ctr round trip', new TextDecoder().decode(back), new TextDecoder().decode(plain));
+  // aes-js CTR with the same counter must agree with WebCrypto (MEGA's layout).
+  const ref = new aesjs.ModeOfOperation.ctr(MG.fileAesKey(k32), new aesjs.Counter(MG.fileCtrIv(k32))).encrypt(plain);
+  eq('ctr matches aes-js', MG.b64Encode(new Uint8Array(await crypto.subtle.encrypt(algo, key, plain))), MG.b64Encode(ref));
 }
 
 // ── End to end: archive → custom source record ─────────────────────────────

@@ -41,6 +41,7 @@
   // force path), so a viewing only ever holds one local file at a time.
   const LOCAL_ID = 'custom:local';
   const ANIMESUB_ID = 'custom:animesub';   // fork: AnimeSub download slot
+  const MEGA_ID = 'custom:mega';           // fork: group MEGA folder download slot
 
   const isCustomId = (id) => typeof id === 'string' && id.startsWith('custom:');
 
@@ -99,5 +100,5 @@
     return cues.map((c, k) => ({ ...c, text: out[k] || c.text, srcText: c.text }));
   }
 
-  NS.CRSubFix.customSource = { LOCAL_ID, ANIMESUB_ID, isCustomId, makeLocalSource, makeMtSource, planMtJob, mtCuesFrom };
+  NS.CRSubFix.customSource = { LOCAL_ID, ANIMESUB_ID, MEGA_ID, isCustomId, makeLocalSource, makeMtSource, planMtJob, mtCuesFrom };
 })();

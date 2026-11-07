@@ -456,6 +456,7 @@
     },
     onLoadFile:      ()       => promptLoadFile(),
     onSearchAnimesub: ()      => openAnimesubPanel(),
+    onSearchMega:    ()       => openMegaPanel(),
     onRemoveCustom:  (id)     => { if (STORAGE.lsGet(EP_SRC_PREFIX + currentEp()?.guid)?.id === id) rememberEpSource(currentEp(), null); removeCustomSource(id); },
     onAdjustSync:    (id)     => openSyncPanel(id),
     // Per-track timing nudge — available whenever subtitles are showing.
@@ -789,12 +790,16 @@
   function saveAsPick(ep, pick) { if (ep) STORAGE.lsSet(AS_PICK_PREFIX + ep.guid, { ...pick, at: Date.now() }, EP_MEMORY_TTL); }
   // Called after every sync change: a manual linear sync is what the user
   // tuned by hand, so it travels with the pick; anchors are re-derived anyway.
+  const MEGA_PICK_PREFIX = 'crSubFix_megaPick_';
+  function getMegaPick(ep) { return ep ? STORAGE.lsGet(MEGA_PICK_PREFIX + ep.guid) : null; }
+  function saveMegaPick(ep, pick) { if (ep) STORAGE.lsSet(MEGA_PICK_PREFIX + ep.guid, { ...pick, at: Date.now() }, EP_MEMORY_TTL); }
   function rememberCustomSync(ep, id) {
-    if (!ep || id !== CUSTOM.ANIMESUB_ID) return;
-    const pick = getAsPick(ep);
+    if (!ep) return;
+    const [get, save] = id === CUSTOM.ANIMESUB_ID ? [getAsPick, saveAsPick] : id === CUSTOM.MEGA_ID ? [getMegaPick, saveMegaPick] : [];
+    const pick = get && get(ep);
     if (!pick) return;
     const sync = ep.getCustomSource(id)?.sync;
-    saveAsPick(ep, { ...pick, sync: sync?.mode === 'linear' ? sync : null });
+    save(ep, { ...pick, sync: sync?.mode === 'linear' ? sync : null });
   }
 
   const AS_TITLE_TYPES  = [['org', 'Tytuł oryginalny'], ['en', 'Tytuł angielski'], ['pl', 'Tytuł polski']];
@@ -840,7 +845,8 @@
       const absNote = meta.episodeAbs && meta.episodeInSeason && meta.episodeAbs !== meta.episodeInSeason
         ? ` (CR: E${meta.episodeAbs} = ep${meta.episodeInSeason} w sezonie)` : '';
       return {
-        candidates,
+        candidates, meta,
+        titles: [entry.romaji, first?.romaji].filter(Boolean),
         note: (t.ok ? `Tytuł z AniList: ${t.romaji}` : `Brak dopasowania w AniList — użyto tytułu z Crunchyroll`) + absNote,
       };
     })().catch((e) => { log.warn('AnimeSub suggestion failed:', e && e.message); return null; });
@@ -922,9 +928,13 @@
         box.appendChild(again);
       }
     }
+    const megaB = syncBtn('📁 Foldery MEGA');
+    megaB.title = 'Szukaj w publicznych folderach MEGA grup (FrixySubs, FujiSubs…)';
+    megaB.addEventListener('click', () => { close(); openMegaPanel(); });
     const closeB = syncBtn('✕');
     closeB.addEventListener('click', () => close());
-    $('[data-row="close"]').appendChild(closeB);
+    $('[data-row="close"]').style.cssText = 'display:flex;gap:6px;';
+    $('[data-row="close"]').append(megaB, closeB);
     const goB = syncBtn('Szukaj', true);
     goB.addEventListener('click', () => { state.matchTitle = null; search(0); });
     $('[data-row="go"]').appendChild(goB);
@@ -1063,6 +1073,225 @@
       status.textContent = `Nic nie pasuje do ${sug.candidates.map((c) => `„${c.query}”`).join(', ')}. ${sug.note}. Popraw frazę ręcznie.`;
       list.innerHTML = '';
     }
+  }
+
+  // ── Group MEGA folders panel (fork, stage 8) ──────────────────────────────
+  // Searches the public "all subtitles" MEGA folders of Polish fansub groups
+  // by file name.  The SW lists each folder once per 12 h (one API call),
+  // searches locally and downloads + decrypts only the clicked file.
+  const MEGA_PANEL_ID = 'cr-bsub-mega-panel';
+  function megaErrorText(code) {
+    if (code === 'timeout') return 'MEGA nie odpowiada — spróbuj za chwilę.';
+    if (code === 'bad-link') return 'To nie jest link do folderu MEGA (https://mega.nz/folder/…#…).';
+    if (code === 'exists') return 'Ten folder już jest na liście.';
+    if (code === 'not-in-index') return 'Pliku nie ma już w folderze — wyszukaj ponownie.';
+    if (code === 'too-large') return 'Plik jest za duży jak na napisy.';
+    if (/^MEGA error -9/.test(code || '')) return 'Folder lub plik nie istnieje (usunięty albo zmieniony link).';
+    return 'Błąd MEGA: ' + (code || 'nieznany');
+  }
+  const parseEpisodes = (s) => [...new Set(String(s || '').split(/[^0-9]+/).filter(Boolean).map(Number).filter((n) => n > 0 && n < 10000))];
+
+  function openMegaPanel() {
+    if (!currentEp()) return;
+    const existing = document.getElementById(MEGA_PANEL_ID);
+    if (existing) { existing.querySelector('input')?.focus(); return; }
+    const ep0 = currentEp();
+    const pick = getMegaPick(ep0);
+    const state = { busy: false, auto: null };
+
+    const panel = document.createElement('div');
+    panel.id = MEGA_PANEL_ID;
+    Object.assign(panel.style, panelStyle({
+      position: 'absolute', zIndex: '2147483646', padding: '12px 14px', width: '500px',
+      maxWidth: '92%', maxHeight: '78%', display: 'flex', flexDirection: 'column', gap: '8px',
+    }));
+    const inputCss = `background:#111;color:${THEME.text};border:1px solid ${THEME.panelEdge};border-radius:5px;padding:5px 8px;font:12px ${THEME.font};`;
+    panel.innerHTML =
+      `<div style="display:flex;justify-content:space-between;align-items:center;">` +
+        `<div style="font-size:13px;font-weight:700;color:${THEME.accent};">📁 Foldery MEGA grup</div>` +
+        `<div data-row="head" style="display:flex;gap:6px;"></div></div>` +
+      `<div style="display:flex;gap:6px;">` +
+        `<input data-f="q" type="text" spellcheck="false" placeholder="tytuł, np. Kusuriya no Hitorigoto 3rd Season" style="flex:1;min-width:0;${inputCss}">` +
+        `<input data-f="e" type="text" spellcheck="false" placeholder="odc. 5, 53" title="Numery odcinka (w sezonie i absolutny), oddzielone przecinkiem; puste = wszystkie" style="width:72px;${inputCss}">` +
+        `<span data-row="go"></span></div>` +
+      `<div data-row="pick"></div>` +
+      `<div data-row="status" style="font-size:11px;color:#999;min-height:14px;"></div>` +
+      `<div data-row="list" style="overflow-y:auto;display:flex;flex-direction:column;gap:6px;scrollbar-width:thin;"></div>` +
+      `<div data-row="folders" style="font-size:11px;color:#999;display:flex;flex-wrap:wrap;gap:6px;align-items:center;border-top:1px solid ${THEME.panelEdge};padding-top:6px;"></div>`;
+    const $ = (sel) => panel.querySelector(sel);
+    const input = $('[data-f="q"]'), epsIn = $('[data-f="e"]');
+    const status = $('[data-row="status"]'), list = $('[data-row="list"]');
+    if (pick) { input.value = pick.query || ''; epsIn.value = (pick.episodes || []).join(', '); }
+
+    for (const ev of ['keydown', 'keyup', 'keypress']) {
+      panel.addEventListener(ev, (e) => {
+        if (ev === 'keydown' && e.key === 'Escape') { close(); return; }
+        if (ev === 'keydown' && e.key === 'Enter' && (e.target === input || e.target === epsIn)) { state.auto = null; search(); }
+        e.stopPropagation();
+      });
+    }
+    const asB = syncBtn('🔎 AnimeSub');
+    asB.addEventListener('click', () => { close(); openAnimesubPanel(); });
+    const closeB = syncBtn('✕');
+    closeB.addEventListener('click', () => close());
+    $('[data-row="head"]').append(asB, closeB);
+    const goB = syncBtn('Szukaj', true);
+    goB.addEventListener('click', () => { state.auto = null; search(); });
+    $('[data-row="go"]').appendChild(goB);
+
+    if (pick && pick.h) {
+      const box = $('[data-row="pick"]');
+      const loaded = ep0.getCustomSource(CUSTOM.MEGA_ID)?.origin?.id === pick.h;
+      const syncTxt = pick.sync?.mode === 'linear' ? ` · synchro ${pick.sync.offset >= 0 ? '+' : ''}${pick.sync.offset.toFixed(2)} s` : '';
+      box.style.cssText = `display:flex;gap:8px;align-items:center;font-size:11px;color:${THEME.text};border:1px solid ${THEME.accent};border-radius:6px;padding:5px 8px;`;
+      box.innerHTML = `<div style="flex:1;min-width:0;word-break:break-word;">✓ Wybrane na tym odcinku: <b>${escapeHtml(pick.group || '?')}</b> — ${escapeHtml(pick.name || pick.h)}${escapeHtml(syncTxt)}${loaded ? ' (wczytane)' : ''}</div>`;
+      if (!loaded) {
+        const again = syncBtn('Pobierz ponownie', true);
+        again.setAttribute('data-dl', '1');
+        again.addEventListener('click', () => download({ h: pick.h, folder: pick.folder, name: pick.name, group: pick.group, dir: pick.dir }));
+        box.appendChild(again);
+      }
+    }
+
+    function close() { try { panel.remove(); } catch (_) {} }
+    function setBusy(b, text) {
+      state.busy = b;
+      goB.disabled = b; goB.style.opacity = b ? '0.5' : '1';
+      for (const btn of panel.querySelectorAll('[data-dl]')) btn.disabled = b;
+      if (text != null) status.textContent = text;
+    }
+
+    async function search(opts = {}) {
+      if (state.busy) return null;
+      const title = input.value.trim();
+      if (!title) { status.textContent = 'Wpisz tytuł (najlepiej romaji, jak na AniList).'; input.focus(); return null; }
+      const episodes = parseEpisodes(epsIn.value);
+      setBusy(true, 'Przeszukuję foldery… (pierwszy raz pobieram ich listę, kilka sekund)');
+      const res = await rpc('megaSearch', { title, episodes, refresh: !!opts.refresh }, 60000);
+      setBusy(false, '');
+      if (!res.ok) { status.textContent = megaErrorText(res.error); return res; }
+      render(res, { title, episodes });
+      return res;
+    }
+
+    function render(res, q) {
+      list.innerHTML = '';
+      const n = res.results.length;
+      const err = res.errors && res.errors.length ? ` Niedostępne: ${res.errors.join('; ')}.` : '';
+      status.textContent = (n
+        ? `${n}${n >= 40 ? '+' : ''} plik${n === 1 ? '' : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 'i' : 'ów')} w ${res.folders} folderach.`
+        : `Brak plików dla „${q.title}”${q.episodes.length ? ` z odc. ${q.episodes.join('/')}` : ''}. Spróbuj bez numeru albo krótszego tytułu.`) + err;
+      for (const r of res.results) list.appendChild(resultRow(r));
+      list.scrollTop = 0;
+    }
+
+    function resultRow(r) {
+      const row = document.createElement('div');
+      Object.assign(row.style, {
+        border: `1px solid ${THEME.panelEdge}`, borderRadius: '6px', padding: '7px 9px',
+        display: 'flex', gap: '8px', alignItems: 'flex-start',
+      });
+      const info = document.createElement('div');
+      info.style.cssText = 'flex:1;min-width:0;font-size:12px;line-height:1.4;';
+      const kb = Math.max(1, Math.round((r.size || 0) / 1024));
+      info.innerHTML =
+        `<div style="font-weight:700;color:${THEME.text};word-break:break-word;">${escapeHtml(r.name)}</div>` +
+        `<div style="color:#999;font-size:11px;word-break:break-word;">${escapeHtml(r.dir)}</div>` +
+        `<div style="color:${THEME.accent};font-size:11px;margin-top:2px;">${escapeHtml(r.group)} · ${kb} kB</div>`;
+      const isPick = pick && pick.h === r.h;
+      if (isPick) row.style.borderColor = THEME.accent;
+      const dl = syncBtn(isPick ? 'Pobierz ✓' : 'Pobierz', true);
+      dl.setAttribute('data-dl', '1');
+      dl.addEventListener('click', () => download(r));
+      row.append(info, dl);
+      return row;
+    }
+
+    async function download(r) {
+      if (state.busy) return;
+      setBusy(true, `Pobieram ${r.name}…`);
+      const res = await rpc('megaDownload', { folder: r.folder, h: r.h }, 60000);
+      setBusy(false, '');
+      if (!res.ok) { status.textContent = megaErrorText(res.error); return; }
+      let bytes;
+      try {
+        const bin = atob(res.base64);
+        bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      } catch (_) { status.textContent = 'Uszkodzone dane z MEGA.'; return; }
+      log.info(`MEGA download [${r.group}] ${res.dir}/${res.filename} — ${res.size} bytes.`);
+      close();
+      const ep = currentEp();
+      const prev = getMegaPick(ep);
+      const keepSync = prev && prev.h === r.h ? prev.sync : null;
+      const origin = { site: 'mega', id: r.h, folder: r.folder, author: r.group, dir: r.dir, title: r.name };
+      await ingestSubtitleBytes(bytes, res.filename, { id: CUSTOM.MEGA_ID, origin, sync: keepSync });
+      if (currentEp() === ep && ep.getCustomSource(CUSTOM.MEGA_ID)?.origin?.id === r.h) {
+        saveMegaPick(ep, {
+          h: r.h, folder: r.folder, name: r.name, group: r.group, dir: r.dir,
+          query: input.value.trim(), episodes: parseEpisodes(epsIn.value), sync: keepSync || null,
+        });
+      }
+    }
+
+    // Folder list footer: built-ins plus user-added links (removable).
+    function renderFolders(folders) {
+      const box = $('[data-row="folders"]');
+      box.innerHTML = '<span>Foldery:</span>';
+      for (const f of folders || []) {
+        const chip = document.createElement('span');
+        chip.style.cssText = `border:1px solid ${THEME.panelEdge};border-radius:10px;padding:1px 7px;color:${THEME.text};`;
+        chip.textContent = f.group;
+        if (!f.builtin) {
+          const x = document.createElement('span');
+          x.textContent = ' ✕'; x.style.cursor = 'pointer'; x.title = 'Usuń folder z listy';
+          x.addEventListener('click', async () => { const r = await rpc('megaFolders', { op: 'remove', handle: f.handle }); if (r.ok) renderFolders(r.folders); });
+          chip.appendChild(x);
+        }
+        box.appendChild(chip);
+      }
+      const add = syncBtn('+ Dodaj link');
+      add.title = 'Dodaj publiczny folder MEGA innej grupy (link z kluczem po #)';
+      add.addEventListener('click', async () => {
+        const link = window.prompt('Link do publicznego folderu MEGA z napisami (https://mega.nz/folder/…#klucz):');
+        if (!link) return;
+        const group = window.prompt('Nazwa grupy (do wyświetlania):', '') || '';
+        setBusy(true, 'Sprawdzam folder…');
+        const r = await rpc('megaFolders', { op: 'add', link, group }, 60000);
+        setBusy(false, r.ok ? `Dodano folder: ${r.files} plików z napisami.` : megaErrorText(r.error));
+        if (r.ok) renderFolders(r.folders);
+      });
+      const refresh = syncBtn('↻');
+      refresh.title = 'Odśwież listy plików (normalnie co 12 h)';
+      refresh.addEventListener('click', () => search({ refresh: true }));
+      box.append(add, refresh);
+    }
+    rpc('megaFolders', { op: 'list' }).then((r) => { if (r.ok && panel.isConnected) renderFolders(r.folders); });
+
+    const mountTarget = document.fullscreenElement ?? videoEl?.parentElement ?? document.body;
+    if (mountTarget !== document.body && window.getComputedStyle(mountTarget).position === 'static') mountTarget.style.position = 'relative';
+    mountTarget.appendChild(panel);
+    panel.style.left = '50%'; panel.style.top = '6%'; panel.style.transform = 'translateX(-50%)';
+    setTimeout(() => { input.focus(); input.select(); }, 0);
+    if (input.value.trim()) { search(); return; }
+    // Same suggestion as AnimeSub (CR metadata → AniList romaji): try the
+    // season's title with both episode numbers, then the first season's title.
+    status.textContent = 'Ustalam tytuł odcinka…';
+    suggestAnimesubQuery(ep0).then(async (sug) => {
+      if (!panel.isConnected || state.busy || input.value.trim()) { if (!input.value.trim()) status.textContent = ''; return; }
+      if (!sug) { status.textContent = 'Nie udało się ustalić tytułu — wpisz go ręcznie.'; return; }
+      const m = sug.meta || {};
+      const eps = [m.episodeInSeason, m.episodeAbs].filter((n) => n != null);
+      const tries = [...new Set(sug.titles.map((t) => TITLE_MAP.queryTitle(t)))];
+      for (let i = 0; i < tries.length; i++) {
+        if (!panel.isConnected) return;
+        if (i > 0 && input.value.trim() !== tries[i - 1]) return;   // the user edited the box
+        input.value = tries[i];
+        epsIn.value = (i === 0 ? eps : [...eps].reverse()).join(', ');
+        const res = await search();
+        if (!res || !res.ok || res.results.length) { if (res && res.ok) status.textContent += ` ${sug.note}.`; return; }
+      }
+    }).catch((e) => log.warn('MEGA suggestion failed:', e && e.message));
   }
 
   // parseName drives format detection (legacy formats arrive as ".srt");

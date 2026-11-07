@@ -59,6 +59,9 @@
     AS_SEARCH:    'AS_SEARCH',        // content     → background (AnimeSub search)
     AS_DOWNLOAD:  'AS_DOWNLOAD',      // content     → background (AnimeSub ZIP, base64)
     AS_TITLE:     'AS_TITLE',         // content     → background (AniList romaji for a CR season)
+    MEGA_SEARCH:  'MEGA_SEARCH',      // content     → background (search group MEGA folders)
+    MEGA_DOWNLOAD:'MEGA_DOWNLOAD',    // content     → background (decrypted file, base64)
+    MEGA_FOLDERS: 'MEGA_FOLDERS',     // content     → background (list/add/remove folder links)
   };
 
   // window.postMessage `type` values sent between content.js (isolated world)
