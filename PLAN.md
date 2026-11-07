@@ -17,7 +17,7 @@
 | 5 | Tytuł/odcinek ze strony CR + AniList (romaji, cache) | |
 | 6 | Pamięć per odcinek: metadane źródła w rekordzie (`site`, `id`, autor) | |
 | 7 | Instrukcja testów (Kusuriya S3, Frieren) i strojenia synchronizacji | |
-| 8 | **Discord: przycisk „Wyślij do Better Subs” przy załącznikach w discord.com (web)** → skrzynka napisów w rozszerzeniu → wybór w odtwarzaczu CR; id `custom:discord` | nowy, po decyzji |
+| 8 | **Discord: „Szukaj w Discordzie” z odtwarzacza CR → karta Discorda z wpisanym wyszukiwaniem → „Wyślij do Better Subs” przy załączniku → napisy same trafiają do odcinka**; id `custom:discord` | nowy, po decyzji |
 
 ## Discord — ustalenia i granice
 
@@ -41,3 +41,37 @@
   FujiSubs, Grupa Mirai, Max-Subs, Hori Subs, Fusoku — ta ostatnia to autorzy
   pliku Frieren pobranego z AnimeSub). Lista jest sprzed 3–4 lat; część grup mogła
   zniknąć — do sprawdzenia, zanim zbudujemy coś pod konkretną grupę.
+
+## Etap 8 — przepływ (wersja z 2026-11-07, po weryfikacji)
+
+Fakty: Discord ma linki do serwera/kanału (`discord.com/channels/<serwer>/<kanał>`),
+ale **nie znalazłem udokumentowanego linku z gotowym wyszukiwaniem**. Za to jego
+wyszukiwarka indeksuje **nazwy i rozszerzenia załączników** (oficjalna dokumentacja
+endpointu Search Guild Messages: `attachment_filename`, `attachment_extension`,
+`has=file`). Brakujący element robi skrypt rozszerzenia na discord.com.
+
+1. CR: przycisk „Szukaj w Discordzie” (obok AnimeSub) → wybór serwera z listy
+   (lub „wszystkie” = karta na serwer). Fraza: romaji + odcinek, edytowalna.
+2. SW zapisuje „zlecenie” `{serwer, kanał?, fraza, guid odcinka, karta CR}` i otwiera
+   kartę `discord.com/channels/<serwer>`.
+3. Skrypt na discord.com: jeśli jesteś zalogowany — wpisuje frazę (+ `has:file`) w
+   pole wyszukiwania tak, jakbyś ją wpisał. Gdy się nie uda (zmiana UI) — pływający
+   panel „Kopiuj frazę”.
+4. Przy każdym załączniku `.ass/.ssa/.srt/.txt/.sub/.zip` w wynikach: „Wyślij do
+   Better Subs”. Klik → SW pobiera ten plik z `cdn.discordapp.com` → wspólna ścieżka
+   (ZIP, kodowanie, formaty) → rekord trafia do odcinka o zapisanym guid → karta CR
+   wraca na wierzch, napisy włączone.
+5. „Dodaj ten serwer do Better Subs”: przycisk na discord.com zapamiętuje id i nazwę
+   serwera (opcjonalnie kanał z wydaniami). Zaproszenia do grup — z artykułu strefaanime.
+
+Ręczne kroki: klik „Szukaj”, (jednorazowe logowanie), wybór wyniku, klik „Wyślij”.
+
+Czego NIE robimy: wywołań API Discorda Twoim tokenem (self-bot — regulamin, ban),
+przeglądania kanałów w tle, pobierania czegokolwiek bez kliknięcia.
+Ryzyka: wpisywanie w pole wyszukiwania i dodatkowe przyciski to modyfikacja klienta
+(szara strefa regulaminu, wyzwalana tylko przez Ciebie); selektory DOM Discorda
+zmieniają się — kod izolowany w jednym pliku, z fallbackiem „Kopiuj frazę”.
+Ograniczenie: grupy wydające tylko MKV z wbudowanymi napisami (softsuby) — wyciąganie
+ASS z MKV to osobny, cięższy etap (pliki setek MB); na razie poza zakresem.
+Do sprawdzenia na żywo (spike): czy wpisany tekst bez filtra trafia w nazwy plików,
+jak wyglądają wyniki i przyciski pobierania w DOM, czy URL z CDN działa z SW.
