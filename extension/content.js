@@ -140,10 +140,10 @@
       } catch (e) {
         reply({ ok: false, error: String(e && e.message) });
       }
-    } else if (data.method === 'animesubSearch' || data.method === 'animesubDownload') {
-      // Fork: AnimeSub.info search / download, executed by the SW (host
-      // permission + cookie jar live there).  The result passes through as-is.
-      const type = data.method === 'animesubSearch' ? MSG.AS_SEARCH : MSG.AS_DOWNLOAD;
+    } else if (data.method === 'animesubSearch' || data.method === 'animesubDownload' || data.method === 'animesubTitle') {
+      // Fork: AnimeSub.info search / download and the AniList title lookup,
+      // executed by the SW (host permissions + cookie jar live there).
+      const type = { animesubSearch: MSG.AS_SEARCH, animesubDownload: MSG.AS_DOWNLOAD, animesubTitle: MSG.AS_TITLE }[data.method];
       try {
         chrome.runtime.sendMessage({ type, payload: data.payload }, (res) => {
           const err = chrome.runtime.lastError;

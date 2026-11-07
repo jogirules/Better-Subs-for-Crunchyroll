@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const FXJ = (n) => JSON.parse(readFileSync(join(ROOT, 'tools/fixtures/animesub', n), 'utf8'));
 const FX = (n) => new Uint8Array(readFileSync(join(ROOT, 'tools/fixtures/animesub', n)));
 const load = (p) => (0, eval)(readFileSync(join(ROOT, p), 'utf8'));
 
@@ -35,8 +36,9 @@ for (const p of [
   'extension/lib/sign-track.js',
   'extension/lib/custom-source.js',
   'extension/lib/sub-ingest.js',
+  'extension/lib/title-map.js',
 ]) load(p);
-const { animesub: AS, zipRead: ZIP, legacySubs: LEG, textDecode: TD, customSource: CUSTOM, subIngest: ING } = globalThis.CRSubFix;
+const { animesub: AS, zipRead: ZIP, legacySubs: LEG, textDecode: TD, customSource: CUSTOM, subIngest: ING, titleMap: TM } = globalThis.CRSubFix;
 const iso2 = (u8) => new TextDecoder('iso-8859-2').decode(u8);
 const PL = 'ąęłóśźżćńĄĘŁÓŚŹŻĆŃ';
 
@@ -176,6 +178,67 @@ section('sub-ingest');
   ok('tmplayer → record with Polish text', !!rec && rec.srcCues[0].text.includes('Zażółć'));
   const m = ING.toSubtitleText(FX('microdvd-cp1250.sub'), 'x.sub', { fps: 25 });
   eq('microdvd via ingest', [m.format, m.fps], ['microdvd', 25]);
+}
+
+// ── Title mapping: CR episode → AniList romaji ────────────────────────────
+section('title map');
+{
+  const meta = TM.metaFromCms(FXJ('cr-cms-kusuriya-e53.json'));
+  eq('cms meta', [meta.seriesTitle, meta.seasonNumber, meta.episodeAbs, meta.episodeInSeason, meta.airDate],
+    ['The Apothecary Diaries', 3, 53, 5, '2026-10-30']);
+  eq('in-season number wins', TM.episodeForQuery(meta), 5);
+  eq('absolute number as fallback', TM.episodeForQuery({ episodeAbs: 53, episodeInSeason: null }), 53);
+  eq('metaFromCms on junk', TM.metaFromCms({ data: [] }), null);
+  eq('slugToTitle', TM.slugToTitle('the-apothecary-diaries'), 'the apothecary diaries');
+  eq('fuzzyDate full', TM.fuzzyDate({ year: 2026, month: 10, day: 2 }), '2026-10-02');
+  eq('fuzzyDate partial', TM.fuzzyDate({ year: 2027, month: 4, day: null }), '2027-04-01');
+  eq('fuzzyDate empty', TM.fuzzyDate({ year: null }), null);
+  ok('anilistBody is JSON with the search', JSON.parse(TM.anilistBody('Frieren')).variables.s === 'Frieren');
+
+  const ku = FXJ('anilist-kusuriya.json'), fr = FXJ('anilist-frieren.json');
+  const pick = (m, o) => TM.pickMedia(m, o)?.title?.romaji ?? null;
+  eq('Kusuriya S3 by air date', pick(ku, { seasonNumber: 3, airDate: '2026-10-30' }), 'Kusuriya no Hitorigoto 3rd Season');
+  eq('Kusuriya S2 by air date', pick(ku, { seasonNumber: 2, airDate: '2025-02-14' }), 'Kusuriya no Hitorigoto 2nd Season');
+  eq('Kusuriya S1, no date', pick(ku, { seasonNumber: 1, airDate: null }), 'Kusuriya no Hitorigoto');
+  eq('Kusuriya S3, no date', pick(ku, { seasonNumber: 3, airDate: null }), 'Kusuriya no Hitorigoto 3rd Season');
+  eq('Frieren S2 (ONA mini-shorts ignored)', pick(fr, { seasonNumber: 2, airDate: '2026-01-16' }), 'Sousou no Frieren 2nd Season');
+  eq('no season, no date → first TV', pick(fr, {}), 'Sousou no Frieren');
+  // CR season numbers are not AniList seasons: Spy x Family CR "Season 1" holds
+  // both AniList cours; Black Clover's CR "Season 2" has season_number 6.
+  const tv = (romaji, s, e) => ({ format: 'TV', title: { romaji }, startDate: s, endDate: e });
+  const D = (y, m, d) => ({ year: y, month: m, day: d });
+  const spy = [tv('SPY×FAMILY', D(2022, 4, 9), D(2022, 6, 25)), tv('SPY×FAMILY Part 2', D(2022, 10, 1), D(2022, 12, 24)),
+               tv('SPY×FAMILY Season 2', D(2023, 10, 7), D(2023, 12, 23))];
+  eq('date beats CR season number (split cour)', pick(spy, { seasonNumber: 1, airDate: '2022-10-01' }), 'SPY×FAMILY Part 2');
+  const bc = [tv('Black Clover', D(2017, 10, 3), D(2021, 3, 30)), tv('Black Clover (2026)', D(2026, 10, 3), D(null))];
+  eq('date beats CR season number 6', pick(bc, { seasonNumber: 6, airDate: '2026-11-07' }), 'Black Clover (2026)');
+  eq('empty results', TM.pickMedia([], { seasonNumber: 1 }), null);
+  // Candidate queries — cases checked live against CR / AniList / AnimeSub (2026-11-07).
+  const cq = (o) => TM.candidateQueries(o).map((c) => c.query);
+  eq('Kusuriya S3 E53 (in-season numbering)', cq({
+    entry: { romaji: 'Kusuriya no Hitorigoto 3rd Season', startDate: '2026-10-02' },
+    first: { romaji: 'Kusuriya no Hitorigoto', startDate: '2023-10-22' },
+    meta: { episodeInSeason: 5, episodeAbs: 53, airDate: '2026-10-30' } }),
+    ['Kusuriya no Hitorigoto 3rd Season ep05', 'Kusuriya no Hitorigoto ep53', 'Kusuriya no Hitorigoto 3rd Season']);
+  eq('Black Clover "Part 2" E52 (absolute inside one AniList entry)', cq({
+    entry: { romaji: 'Black Clover', startDate: '2017-10-03' }, first: { romaji: 'Black Clover', startDate: '2017-10-03' },
+    meta: { episodeInSeason: 1, episodeAbs: 52, airDate: '2018-10-02' } }),
+    ['Black Clover ep52', 'Black Clover ep01', 'Black Clover']);
+  eq('Spy x Family E13 (split cour, × normalized)', cq({
+    entry: { romaji: 'SPY×FAMILY Part 2', startDate: '2022-10-01' }, first: { romaji: 'SPY×FAMILY', startDate: '2022-04-09' },
+    meta: { episodeInSeason: 13, episodeAbs: 13, airDate: '2022-10-01' } }),
+    ['SPY x FAMILY Part 2 ep13', 'SPY x FAMILY ep13', 'SPY x FAMILY Part 2']);
+  eq('no AniList match → CR title only', cq({ entry: { romaji: 'Some Show', startDate: null }, first: null,
+    meta: { episodeInSeason: 3, episodeAbs: 3, airDate: null } }), ['Some Show ep03', 'Some Show']);
+  ok('resultsMatch: real hit', TM.resultsMatch([{ titleOrg: 'Spy x Family ep13' }], 'SPY x FAMILY'));
+  ok('resultsMatch: unrelated epNN is not a hit', !TM.resultsMatch([{ titleOrg: '.hack//Roots ep13' }, { titleOrg: '11eyes OVA ep13' }], 'SPY x FAMILY'));
+  // Live AnimeSub response for "Kusuriya no Hitorigoto 3rd Season ep05": loose search, S2 files too.
+  const kuRes = [{ titleOrg: 'Kusuriya no Hitorigoto Season 2 ep05' }, { titleOrg: 'Kusuriya no Hitorigoto 2nd Season ep05' }];
+  ok('resultsMatch: other season is not a hit', !TM.resultsMatch(kuRes, 'Kusuriya no Hitorigoto 3rd Season'));
+  ok('resultsMatch: "Season 3" = "3rd Season"', TM.resultsMatch([...kuRes, { titleOrg: 'Kusuriya no Hitorigoto Season 3 ep05' }], 'Kusuriya no Hitorigoto 3rd Season'));
+  eq('firstTv', TM.firstTv(fr)?.title?.romaji, 'Sousou no Frieren');
+  const q = AS.buildQuery(pick(ku, { seasonNumber: 3, airDate: meta.airDate }), TM.episodeForQuery(meta));
+  eq('end to end query', q, 'Kusuriya no Hitorigoto 3rd Season ep05');
 }
 
 // ── End to end: archive → custom source record ─────────────────────────────

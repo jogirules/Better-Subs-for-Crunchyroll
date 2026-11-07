@@ -58,6 +58,7 @@
     MT_TRANSLATE: 'MT_TRANSLATE',     // content     → background (translate a batch)
     AS_SEARCH:    'AS_SEARCH',        // content     → background (AnimeSub search)
     AS_DOWNLOAD:  'AS_DOWNLOAD',      // content     → background (AnimeSub ZIP, base64)
+    AS_TITLE:     'AS_TITLE',         // content     → background (AniList romaji for a CR season)
   };
 
   // window.postMessage `type` values sent between content.js (isolated world)

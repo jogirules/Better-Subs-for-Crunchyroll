@@ -14,7 +14,7 @@
 | 2 | Spike w service workerze: AnimeSub wyszukaj → pobierz → rozpakuj → zdekoduj; weryfikacja, czy `fetch` z SW niesie ciasteczko `ansi_sciagnij` | ✅ (cookie działa; 3 żądania / 6,7 s) |
 | 3 | RPC `animesubSearch`/`animesubDownload`, kolejka ≥ 3 s między żądaniami, cache wyników 24 h (bez `sh`) | ✅ (relay sprawdzony w Chromium: szukanie 153 ms, z cache 1 ms, ZIP 6 s) |
 | 4 | UI „Szukaj na AnimeSub”: fraza, typ tytułu, lista wyników, wybór pliku z archiwum; id `custom:animesub` | ✅ kod; panel do sprawdzenia na koncie (bez logowania brak odtwarzacza) |
-| 5 | Tytuł/odcinek ze strony CR + AniList (romaji, cache) | |
+| 5 | Tytuł/odcinek ze strony CR + AniList (romaji, cache) | ✅ (CR cms/objects + AniList; panel do sprawdzenia na koncie) |
 | 6 | Pamięć per odcinek: metadane źródła w rekordzie (`site`, `id`, autor) | |
 | 7 | Instrukcja testów (Kusuriya S3, Frieren) i strojenia synchronizacji | |
 | 8 | **Discord: „Szukaj w Discordzie” z odtwarzacza CR → karta Discorda z wpisanym wyszukiwaniem → „Wyślij do Better Subs” przy załączniku → napisy same trafiają do odcinka**; id `custom:discord` | nowy, po decyzji |
@@ -85,3 +85,15 @@ jak wyglądają wyniki i przyciski pobierania w DOM, czy URL z CDN działa z SW.
 - CR numeruje Kusuriya absolutnie (S3 ep05 = E53) — etap 5 musi to przeliczać.
 - Metadane formatu na AnimeSub bywają błędne ("TMPlayer" z ASS w środku) — format
   rozpoznajemy po treści.
+
+## Ustalenia do etapu 5 (sprawdzone 2026-11-07 na CR, AniList, AnimeSub)
+
+- CR `cms/objects/<guid>`: `sequence_number` = odcinek w sezonie, `episode_number` = absolutny,
+  `episode_air_date` = oryginalna emisja JP także dla serii dodanych później (Death Note: 2006, na CR od 2025).
+- CR `season_number` to kolejność wpisów, nie sezon (Black Clover „Season 2” = 6, Re:ZERO „Season 2” = 3)
+  → wpis AniList wybiera data emisji; numer tylko jako fallback.
+- AnimeSub numeruje niejednolicie: w sezonie (Kusuriya 3rd Season ep05), ciągle przez cour (Spy x Family ep13),
+  absolutnie (Black Clover ep52) → do 3 prób zapytania, stop na pierwszym realnym trafieniu.
+- Znak „×” psuje wyszukiwarkę AnimeSub (zwraca dowolne „epNN”) → zamiana na „x” + sprawdzanie tytułu wyników.
+- Uploaderzy piszą „Season 3” zamiast „3rd Season” → porównanie po znormalizowanym numerze sezonu.
+- Token CR wygasa po ~5 min → do zapytania o metadane brany jest najświeższy nagłówek z ruchu strony.

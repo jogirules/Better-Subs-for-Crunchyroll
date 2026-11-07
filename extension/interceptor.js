@@ -102,6 +102,8 @@
   const SUB_SYNC   = NS.subSync;
   const CUSTOM     = NS.customSource;
   const INGEST     = NS.subIngest;    // bytes → subtitle text (ZIP, encodings, legacy formats)
+  const AS_LIB     = NS.animesub;     // fork: AnimeSub query helpers
+  const TITLE_MAP  = NS.titleMap;     // fork: CR episode → AniList romaji query
   const LEARN      = NS.learning;
   const THEME      = NS.uiTheme.tokens;
   const panelStyle = NS.uiTheme.panel;
@@ -779,13 +781,57 @@
     return 'Nie udało się połączyć z AnimeSub.';
   }
 
+  // Default query for this episode: CR metadata (en-US series title, season,
+  // in-season episode number) → AniList romaji for that season → "Romaji epNN".
+  // CR's own cms/objects endpoint is called once, with the auth header the
+  // player already sent; the DOM (og:title + series link) is the fallback.
+  // Memoized per episode guid.  Resolves to { query, note } or null.
+  const _asSuggest = new Map();
+  let _latestAuth = null;   // set by the fetch wrapper
+  function suggestAnimesubQuery(ep) {
+    if (_asSuggest.has(ep.guid)) return _asSuggest.get(ep.guid);
+    const p = (async () => {
+      let meta = null;
+      const auth = _latestAuth || ep.capturedAuth;
+      if (auth) {
+        try {
+          const r = await originalFetch(`/content/v2/cms/objects/${encodeURIComponent(ep.guid)}?locale=en-US`,
+            { headers: { ...auth, Accept: 'application/json' } });
+          if (r.ok) meta = TITLE_MAP.metaFromCms(await r.json());
+        } catch (e) { log.warn('CR metadata fetch failed:', e && e.message); }
+      }
+      if (!meta) meta = TITLE_MAP.metaFromDom(document);
+      if (!meta) return null;
+      const english = meta.source === 'cms' ? meta.seriesTitle : TITLE_MAP.slugToTitle(meta.seriesSlug);
+      const ep_n = TITLE_MAP.episodeForQuery(meta);
+      const t = await rpc('animesubTitle', { search: english, seasonNumber: meta.seasonNumber, airDate: meta.airDate }, 20000);
+      log.info(`AnimeSub title: CR "${english}" S${meta.seasonNumber ?? '?'} ep${ep_n ?? '?'} (${meta.source}) → ${t.ok ? `AniList "${t.romaji}"` : `no AniList match (${t.error})`}.`);
+      const entry = t.ok ? { romaji: t.romaji, startDate: t.startDate } : { romaji: english, startDate: null };
+      const first = t.ok ? { romaji: t.firstRomaji, startDate: t.firstStartDate } : null;
+      const candidates = TITLE_MAP.candidateQueries({ entry, first, meta });
+      if (!candidates.length) return null;
+      const absNote = meta.episodeAbs && meta.episodeInSeason && meta.episodeAbs !== meta.episodeInSeason
+        ? ` (CR: E${meta.episodeAbs} = ep${meta.episodeInSeason} w sezonie)` : '';
+      return {
+        candidates,
+        note: (t.ok ? `Tytuł z AniList: ${t.romaji}` : `Brak dopasowania w AniList — użyto tytułu z Crunchyroll`) + absNote,
+      };
+    })().catch((e) => { log.warn('AnimeSub suggestion failed:', e && e.message); return null; });
+    _asSuggest.set(ep.guid, p);
+    return p;
+  }
+
   function openAnimesubPanel() {
     if (!currentEp()) return;
     const existing = document.getElementById(AS_PANEL_ID);
     if (existing) { existing.querySelector('input')?.focus(); return; }
     let last = {};
     try { last = JSON.parse(localStorage.getItem(AS_LAST_KEY) || '{}') || {}; } catch (_) {}
-    const state = { query: last.query || '', titleType: last.titleType || 'org', page: 0, busy: false };
+    const guid = currentEp().guid;
+    // The last query is reused only on the same episode; elsewhere the
+    // suggestion (CR metadata + AniList) fills the box once it resolves.
+    const sameEp = last.guid === guid && last.query;
+    const state = { query: sameEp ? last.query : '', titleType: last.titleType || 'org', page: 0, busy: false };
 
     const panel = document.createElement('div');
     panel.id = AS_PANEL_ID;
@@ -821,7 +867,7 @@
     for (const ev of ['keydown', 'keyup', 'keypress']) {
       panel.addEventListener(ev, (e) => {
         if (ev === 'keydown' && e.key === 'Escape') { close(); return; }
-        if (ev === 'keydown' && e.key === 'Enter' && e.target === input) search(0);
+        if (ev === 'keydown' && e.key === 'Enter' && e.target === input) { state.matchTitle = null; search(0); }
         e.stopPropagation();
       });
     }
@@ -829,7 +875,7 @@
     closeB.addEventListener('click', () => close());
     $('[data-row="close"]').appendChild(closeB);
     const goB = syncBtn('Szukaj', true);
-    goB.addEventListener('click', () => search(0));
+    goB.addEventListener('click', () => { state.matchTitle = null; search(0); });
     $('[data-row="go"]').appendChild(goB);
 
     function close() { try { panel.remove(); } catch (_) {} }
@@ -845,12 +891,13 @@
       const query = input.value.trim();
       if (!query) { status.textContent = 'Wpisz tytuł, np. „Sousou no Frieren ep01”.'; input.focus(); return; }
       state.query = query; state.titleType = select.value; state.page = page;
-      try { localStorage.setItem(AS_LAST_KEY, JSON.stringify({ query, titleType: state.titleType })); } catch (_) {}
+      try { localStorage.setItem(AS_LAST_KEY, JSON.stringify({ query, titleType: state.titleType, guid })); } catch (_) {}
       setBusy(true, 'Szukam…');
       const res = await rpc('animesubSearch', { query, titleType: state.titleType, page }, 45000);
       setBusy(false);
-      if (!res.ok) { status.textContent = asErrorText(res.error); return; }
+      if (!res.ok) { status.textContent = asErrorText(res.error); return res; }
       render(res);
+      return res;
     }
 
     function render(res) {
@@ -859,7 +906,11 @@
       status.textContent = n
         ? `Strona ${state.page + 1}: ${n} wynik${n === 1 ? '' : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 'i' : 'ów')}${res.cached ? ' (z pamięci podręcznej)' : ''}.`
         : 'Brak wyników. Spróbuj bez numeru odcinka albo innego typu tytułu.';
-      for (const r of res.results) list.appendChild(resultRow(r));
+      // Auto-suggested searches: results that really are this title/season go
+      // first (AnimeSub's search is loose and mixes in other seasons).
+      const mt = state.matchTitle;
+      const rows = mt ? [...res.results].sort((a, b) => TITLE_MAP.resultsMatch([b], mt) - TITLE_MAP.resultsMatch([a], mt)) : res.results;
+      for (const r of rows) list.appendChild(resultRow(r));
       if (state.page > 0) {
         const prev = syncBtn('‹ Poprzednia');
         prev.addEventListener('click', () => search(state.page - 1));
@@ -925,7 +976,36 @@
     mountTarget.appendChild(panel);
     panel.style.left = '50%'; panel.style.top = '6%'; panel.style.transform = 'translateX(-50%)';
     setTimeout(() => { input.focus(); input.select(); }, 0);
-    if (state.query) search(0);   // cached in the SW for 24 h — no extra AnimeSub hit on re-open
+    if (state.query) { search(0); return; }   // cached in the SW for 24 h — no extra AnimeSub hit on re-open
+    status.textContent = 'Ustalam tytuł odcinka…';
+    suggestAnimesubQuery(currentEp()).then((sug) => {
+      if (!panel.isConnected || state.busy) return;
+      if (input.value.trim()) { status.textContent = ''; return; }   // the user already typed something
+      if (!sug) { status.textContent = 'Nie udało się ustalić tytułu — wpisz go ręcznie.'; return; }
+      tryCandidates(sug).catch((e) => log.warn('AnimeSub candidates failed:', e && e.message));
+    });
+
+    // Up to 3 queries, in order, each one a normal queued + cached search;
+    // stop at the first whose results are really this title.
+    async function tryCandidates(sug) {
+      const n = sug.candidates.length;
+      for (let i = 0; i < n; i++) {
+        const c = sug.candidates[i];
+        if (!panel.isConnected) return;
+        if (i > 0 && input.value.trim() !== sug.candidates[i - 1].query) return;   // the user edited the box
+        input.value = c.query;
+        state.matchTitle = c.title;
+        const res = await search(0);
+        if (!res || !res.ok) return;
+        if (TITLE_MAP.resultsMatch(res.results, c.title)) {
+          status.textContent += ` ${sug.note}.` + (i ? ` (próba ${i + 1}/${n})` : '');
+          return;
+        }
+        if (i + 1 < n) status.textContent = `Brak „${c.query}” — próbuję „${sug.candidates[i + 1].query}”…`;
+      }
+      status.textContent = `Nic nie pasuje do ${sug.candidates.map((c) => `„${c.query}”`).join(', ')}. ${sug.note}. Popraw frazę ręcznie.`;
+      list.innerHTML = '';
+    }
   }
 
   // parseName drives format detection (legacy formats arrive as ".srt");
@@ -4621,6 +4701,10 @@
     // Snapshot the Episode at request start; writes after dispose() are no-ops.
     // If we're not on /watch/, no Episode exists and we just pass through.
     const ep = currentEp();
+
+    // Fork: the newest bearer token, for our one-off CR metadata lookup.  CR
+    // tokens expire after ~5 min, so the first captured one goes stale.
+    { const a = extractAuthHeader(args[1] ?? {}); if (a.Authorization) _latestAuth = a; }
 
     if (ep && !ep.capturedAuth) {
       const auth = extractAuthHeader(args[1] ?? {});

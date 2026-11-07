@@ -11,9 +11,10 @@
  *    optional_host_permissions the popup requests when the user enables MT.
  */
 
-importScripts('lib/protocol.js', 'lib/animesub.js');
+importScripts('lib/protocol.js', 'lib/animesub.js', 'lib/title-map.js');
 const { MSG } = self.CRSubFix.protocol;
 const AS = self.CRSubFix.animesub;
+const TM = self.CRSubFix.titleMap;
 
 // ── AnimeSub.info (fork) ───────────────────────────────────────────────────
 // Every request is user-initiated (a click in the player).  One shared queue
@@ -108,9 +109,43 @@ async function animesubDownload(payload) {
   return { ok: true, filename, base64: btoa(bin), size: bytes.length };
 }
 
+// ── AniList: English/localized series title + CR season → romaji (fork) ────
+// One request per (title, season), cached 30 days — AniList titles don't move.
+const TITLE_CACHE_KEY = 'asTitleCache2';   // v2: + first-entry fields
+const TITLE_TTL_MS = 30 * 24 * 3600 * 1000;
+async function resolveTitle(payload) {
+  const search = String(payload?.search || '').trim();
+  if (!search) return { ok: false, error: 'empty-title' };
+  const season = payload.seasonNumber ?? null, airDate = payload.airDate ?? null;
+  // Air date is part of the key: one CR season can span two AniList entries (split cours).
+  const key = `${search.toLowerCase()}|${season ?? ''}|${airDate ?? ''}`;
+  const { [TITLE_CACHE_KEY]: c = {} } = await chrome.storage.local.get(TITLE_CACHE_KEY);
+  if (c[key] && Date.now() - c[key].at < TITLE_TTL_MS) return { ok: true, ...c[key], cached: true };
+  const resp = await fetch(TM.ANILIST_URL, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: TM.anilistBody(search), signal: AbortSignal.timeout(15000),
+  });
+  if (!resp.ok) return { ok: false, error: 'AniList HTTP ' + resp.status };
+  const media = (await resp.json())?.data?.Page?.media || [];
+  const m = TM.pickMedia(media, { seasonNumber: season, airDate });
+  if (!m) return { ok: false, error: 'no-match' };
+  const f = TM.firstTv(media) || m;
+  const value = {
+    romaji: m.title?.romaji || '', english: m.title?.english || '', anilistId: m.id,
+    startDate: TM.fuzzyDate(m.startDate),
+    firstRomaji: f.title?.romaji || '', firstStartDate: TM.fuzzyDate(f.startDate),
+    at: Date.now(),
+  };
+  c[key] = value;
+  const keep = Object.entries(c).sort((a, b) => b[1].at - a[1].at).slice(0, 200);
+  await chrome.storage.local.set({ [TITLE_CACHE_KEY]: Object.fromEntries(keep) });
+  return { ok: true, ...value };
+}
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg || typeof msg !== 'object') return;
-  const fn = msg.type === MSG.AS_SEARCH ? animesubSearch : msg.type === MSG.AS_DOWNLOAD ? animesubDownload : null;
+  const fn = msg.type === MSG.AS_SEARCH ? animesubSearch : msg.type === MSG.AS_DOWNLOAD ? animesubDownload
+           : msg.type === MSG.AS_TITLE ? resolveTitle : null;
   if (!fn) return;
   fn(msg.payload).then(sendResponse).catch(e => {
     const timedOut = e && (e.name === 'TimeoutError' || e.name === 'AbortError');
