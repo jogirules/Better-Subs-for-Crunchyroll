@@ -1,10 +1,10 @@
-# Better Subs + AnimeSub.info (fork prywatnego użytku)
+# Better Subs + AnimeSub.info (fork publiczny)
 
 Fork [Better Subs for Crunchyroll](https://github.com/anitastic-pixel/Better-Subs-for-Crunchyroll)
 (licencja MIT, © anitastic-pixel) z dodatkowym źródłem napisów: wyszukiwanie i
 pobieranie polskich fansubów z AnimeSub.info prosto w odtwarzaczu Crunchyroll.
 
-Prace trwają na gałęzi `animesub`. Aktualizacje oryginału: `git fetch upstream &&
+Gałąź `animesub` scalona do `main` 2026-11-07 (0cae62a); projekt zamknięty, wznawiać tylko na nowe zlecenie. Aktualizacje oryginału: `git fetch upstream &&
 git merge upstream/main` (push do `upstream` jest zablokowany).
 
 ## Instalacja (Load unpacked)
